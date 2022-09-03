@@ -857,8 +857,11 @@ namespace gfx
             glm::vec2 direction;
             // The current particle point size.
             float pointsize = 1.0f;
-            // The expected lifetime of the particle.
-            float lifetime  = 0.0f;
+            // The particle time accumulator
+            float time  = 0.0f;
+            // Scaler for expressing the lifetime of the particle
+            // as a fraction of the maximum lifetime.
+            float time_scale = 1.0f;
             // The current distance travelled in simulation units.
             float distance  = 0.0f;
             // random float value between 0.0f and 1.0f
@@ -940,7 +943,9 @@ namespace gfx
             // On the edge of the emitter shape only
             Edge,
             // Outside the emitter shape
-            Outside
+            Outside,
+            // Center of the emitter shape
+            Center
         };
 
         // Control what is the initial direction of the particles

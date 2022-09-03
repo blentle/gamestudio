@@ -107,6 +107,7 @@ void main()
     gl_Position  = kProjectionMatrix * kModelViewMatrix * vertex;
 }
 )";
+    shader->SetName("GenericVertexShader");
     shader->CompileSource(src);
     return shader;
 }
@@ -1613,7 +1614,7 @@ void main()
     )";
 
     const auto* shader_name = mParams.coordinate_space == CoordinateSpace::Local
-            ? "particle-shader-local" : "particle-shader-global";
+            ? "LocalParticleShader" : "GlobalParticleShader";
     const auto* shader_src = mParams.coordinate_space == CoordinateSpace::Local
             ? local_src : global_src;
 
@@ -1621,6 +1622,7 @@ void main()
     if (!shader)
     {
         shader = device.MakeShader(shader_name);
+        shader->SetName(shader_name);
         shader->CompileSource(shader_src);
     }
     return shader;
@@ -1669,8 +1671,7 @@ Geometry* KinematicsParticleEngineClass::Upload(const Drawable::Environment& env
         // Use the particle data to pass the per particle alpha.
         v.aData.z = p.alpha;
         // use the particle data to pass the per particle time.
-        // note that lifetime counts down!
-        v.aData.w = 1.0f - (p.lifetime / mParams.max_lifetime);
+        v.aData.w = p.time / (p.time_scale * mParams.max_lifetime);
         verts.push_back(v);
     }
 
@@ -1769,8 +1770,11 @@ void KinematicsParticleEngineClass::Update(const Environment& env, InstanceState
     {
         const auto num_particles_always = size_t(mParams.num_particles);
         const auto num_particles_now = state.particles.size();
-        const auto num_particles_needed = num_particles_always - num_particles_now;
-        InitParticles(env, state, num_particles_needed);
+        if (num_particles_now < num_particles_always)
+        {
+            const auto num_particles_needed = num_particles_always - num_particles_now;
+            InitParticles(env, state, num_particles_needed);
+        }
     }
     else if (mParams.mode == SpawnPolicy::Continuous)
     {
@@ -1933,6 +1937,8 @@ void KinematicsParticleEngineClass::InitParticles(const Environment& env, Instan
             {
                 if (mParams.placement == Placement::Inside)
                     position = glm::vec2(math::rand(0.0f, 1.0f), math::rand(0.0f, 1.0f));
+                else if (mParams.placement == Placement::Center)
+                    position = glm::vec2(0.5f, 0.5f);
                 else if (mParams.placement == Placement::Edge)
                 {
                     const auto edge = math::rand(0, 3);
@@ -1950,7 +1956,9 @@ void KinematicsParticleEngineClass::InitParticles(const Environment& env, Instan
             }
             else if (mParams.shape == EmitterShape::Circle)
             {
-                if (mParams.placement == Placement::Inside)
+                if (mParams.placement == Placement::Center)
+                    position = glm::vec2(0.5f, 0.5f);
+                else if (mParams.placement == Placement::Inside)
                 {
                     const auto x = math::rand(-emitter_radius, emitter_radius);
                     const auto y = math::rand(-emitter_radius, emitter_radius);
@@ -1964,10 +1972,16 @@ void KinematicsParticleEngineClass::InitParticles(const Environment& env, Instan
                     position = glm::normalize(glm::vec2(x, y)) * emitter_radius + emitter_center;
                 }
             }
+
             if (mParams.direction == Direction::Sector)
             {
                 const auto angle = math::rand(0.0f, mParams.direction_sector_size) + mParams.direction_sector_start_angle + world_angle;
                 direction = glm::vec2(std::cos(angle), std::sin(angle));
+            }
+            else if (mParams.placement == Placement::Center)
+            {
+                direction = glm::normalize(glm::vec2(math::rand(-1.0f, 1.0f),
+                                                     math::rand(-1.0f, 1.0f)));
             }
             else if (mParams.direction == Direction::Inwards)
                 direction = glm::normalize(emitter_center - position);
@@ -1978,7 +1992,8 @@ void KinematicsParticleEngineClass::InitParticles(const Environment& env, Instan
             // note that the velocity vector is baked into the
             // direction vector in order to save space.
             Particle p;
-            p.lifetime   = math::rand(mParams.min_lifetime, mParams.max_lifetime);
+            p.time       = 0.0f;
+            p.time_scale = math::rand(mParams.min_lifetime, mParams.max_lifetime) / mParams.max_lifetime;
             p.pointsize  = math::rand(mParams.min_point_size, mParams.max_point_size);
             p.alpha      = math::rand(mParams.min_alpha, mParams.max_alpha);
             p.position   = glm::vec2(world.x, world.y);
@@ -2016,6 +2031,8 @@ void KinematicsParticleEngineClass::InitParticles(const Environment& env, Instan
                 if (mParams.placement == Placement::Inside)
                     position = emitter_pos + glm::vec2(math::rand(0.0f, emitter_width),
                                                        math::rand(0.0f, emitter_height));
+                else if (mParams.placement == Placement::Center)
+                    position = emitter_center;
                 else if (mParams.placement == Placement::Edge)
                 {
                     const auto edge = math::rand(0, 3);
@@ -2044,7 +2061,9 @@ void KinematicsParticleEngineClass::InitParticles(const Environment& env, Instan
             }
             else if (mParams.shape == EmitterShape::Circle)
             {
-                if (mParams.placement == Placement::Inside)
+                if (mParams.placement == Placement::Center)
+                    position  = emitter_center;
+                else if (mParams.placement == Placement::Inside)
                 {
                     const auto x = math::rand(-1.0f, 1.0f);
                     const auto y = math::rand(-1.0f, 1.0f);
@@ -2076,6 +2095,11 @@ void KinematicsParticleEngineClass::InitParticles(const Environment& env, Instan
                 const auto angle = math::rand(0.0f, mParams.direction_sector_size) + mParams.direction_sector_start_angle;
                 direction = glm::vec2(std::cos(angle), std::sin(angle));
             }
+            else if (mParams.placement == Placement::Center)
+            {
+                direction = glm::normalize(glm::vec2(math::rand(-1.0f, 1.0f),
+                                                     math::rand(-1.0f, 1.0f)));
+            }
             else if (mParams.direction == Direction::Inwards)
                 direction = glm::normalize(emitter_center - position);
             else if (mParams.direction == Direction::Outwards)
@@ -2084,7 +2108,8 @@ void KinematicsParticleEngineClass::InitParticles(const Environment& env, Instan
             // note that the velocity vector is baked into the
             // direction vector in order to save space.
             Particle p;
-            p.lifetime   = math::rand(mParams.min_lifetime, mParams.max_lifetime);
+            p.time       = 0.0f;
+            p.time_scale = math::rand(mParams.min_lifetime, mParams.max_lifetime) / mParams.max_lifetime;
             p.pointsize  = math::rand(mParams.min_point_size, mParams.max_point_size);
             p.alpha      = math::rand(mParams.min_alpha, mParams.max_alpha);
             p.position   = position;
@@ -2105,9 +2130,8 @@ bool KinematicsParticleEngineClass::UpdateParticle(const Environment& env, Insta
 {
     auto& p = state.particles[i];
 
-    // countdown to end of lifetime
-    p.lifetime -= dt;
-    if (p.lifetime <= 0.0f)
+    p.time += dt;
+    if (p.time > p.time_scale * mParams.max_lifetime)
         return false;
 
     const auto p0 = p.position;
@@ -2126,13 +2150,13 @@ bool KinematicsParticleEngineClass::UpdateParticle(const Environment& env, Insta
     const auto  dd = glm::length(dp);
 
     // Update particle size with respect to time and distance
-    p.pointsize += (dt * mParams.rate_of_change_in_size_wrt_time);
+    p.pointsize += (dt * mParams.rate_of_change_in_size_wrt_time * p.time_scale);
     p.pointsize += (dd * mParams.rate_of_change_in_size_wrt_dist);
     if (p.pointsize <= 0.0f)
         return false;
 
     // update particle alpha value with respect to time and distance.
-    p.alpha += (dt * mParams.rate_of_change_in_alpha_wrt_time);
+    p.alpha += (dt * mParams.rate_of_change_in_alpha_wrt_time * p.time_scale);
     p.alpha += (dt * mParams.rate_of_change_in_alpha_wrt_dist);
     if (p.alpha <= 0.0f)
         return false;

@@ -655,6 +655,15 @@ public:
     virtual void DeleteTextures() override
     {
         mTextures.clear();
+
+        for (auto& unit : mTextureUnits)
+        {
+            unit.texture = nullptr;
+            unit.mag_filter = GL_NONE;
+            unit.min_filter = GL_NONE;
+            unit.wrap_x     = GL_NONE;
+            unit.wrap_y     = GL_NONE;
+        }
     }
     virtual void DeleteFramebuffers() override
     {
@@ -2149,84 +2158,9 @@ private:
             if (mShader)
             {
                 GL_CALL(glDeleteShader(mShader));
+                DEBUG("Deleted shader object. [name='%1', handle=[%2]", mName, mShader);
             }
         }
-        virtual bool CompileFile(const std::string& URI) override
-        {
-            //                  == Notes about shaders ==
-            // 1. Shaders are specific to a device within compatibility constraints
-            // but a GLES 2 device context cannot use GL ES 3 shaders for example.
-            //
-            // 2. Logically shaders are part of the higher level graphics system, i.e.
-            // they express some particular algorithm/technique in a device dependant
-            // way, so logically they belong to the higher layer (i.e. roughly painter
-            // material level of abstraction).
-            //
-            // Basically this means that the device abstraction breaks down because
-            // we need this device specific (shader) code that belongs to the higher
-            // level of the system.
-            //
-            // A fancy way of solving this would be to use a shader translator, i.e.
-            // a device that can transform shader from one language version to another
-            // language version or even from one shader language to another, for example
-            // from GLSL to HLSL/MSL/SPIR-V.  In fact this is exactly what libANGLE does
-            // when it implements GL ES2/3 on top of DX9/11/Vulkan/GL/Metal.
-            // But this only works when the particular underlying implementations can
-            // support similar feature sets. For example instanced rendering is not part
-            // of ES 2 but >= ES 3 so therefore it's not possible to translate ES3 shaders
-            // using instanced rendering into ES2 shaders directly but the whole rendering
-            // path must be changed to not use instanced rendering.
-            //
-            // This then means that if a system was using a shader translation layer (such
-            // as libANGLE) any decent system would still require several different rendering
-            // paths. For example a primary "high end path" and a "fallback path" for low end
-            // devices. These different paths would use different feature sets (such as instanced
-            // rendering) and also (in many cases) require different shaders to be written to
-            // fully take advantage of the graphics API features.
-            // Then these two different rendering paths would/could use a shader translation
-            // layer in order to use some specific graphics API. (through libANGLE)
-            //
-            //            <<Device>>
-            //              |    |
-            //     <ES2 Device> <ES3 Device>
-            //             |      |
-            //            <libANGLE>
-            //                 |
-            //      [GL/DX9/DX11/VULKAN/Metal]
-            //
-            // Where "ES2 Device" provides the low end graphics support and "ES3 Device"
-            // device provides the "high end" graphics rendering path support.
-            // Both device implementations would require their own shaders which would then need
-            // to be translated to the device specific shaders matching the feature level.
-            //
-            // Finally, who should own the shaders and who should edit them ?
-            //   a) The person who is using the graphics library ?
-            //   b) The person who is writing the graphics library ?
-            //
-            // The answer seems to be mostly the latter (b), i.e. in most cases the
-            // graphics functionality should work "out of the box" and the graphics
-            // library should *just work* without the user having to write shaders.
-            // However there's a need that user might want to write their own special
-            // shaders because they're cool to do so and want some special customized
-            // shader effect.
-            //
-            const auto& buffer = gfx::LoadResource(URI);
-            if (!buffer)
-            {
-                ERROR("Failed to load shader source: '%1'", URI);
-                return false;
-            }
-
-            const char* beg = (const char*)buffer->GetData();
-            const char* end = beg + buffer->GetSize();
-            if (!CompileSource(std::string(beg, end)))
-            {
-                ERROR("Failed to compile shader source file: '%1'", URI);
-                return false;
-            }
-            return true;
-        }
-
         virtual bool CompileSource(const std::string& source) override
         {
             GLenum type = GL_NONE;
@@ -2241,13 +2175,13 @@ private:
             }
             if (type == GL_NONE)
             {
-                ERROR("Failed to identify shader type.");
+                ERROR("Failed to identify shader type. [name='%1']", mName);
                 return false;
             }
 
             GLint status = 0;
             GLint shader = mGL.glCreateShader(type);
-            DEBUG("New shader %1 %2", shader, GLEnumToStr(type));
+            DEBUG("Creating new GL shader object. [name='%1', type='%2']", mName, GLEnumToStr(type));
 
             const char* source_ptr = source.c_str();
             GL_CALL(glShaderSource(shader, 1, &source_ptr, nullptr));
@@ -2264,14 +2198,12 @@ private:
             if (status == 0)
             {
                 GL_CALL(glDeleteShader(shader));
-                ERROR("Shader compile error %1", compile_info);
+                ERROR("Shader compile error. [name='%1', info='%2']", mName, compile_info);
                 return false;
             }
             else
             {
-                DEBUG("Shader was built successfully!");
-                if (!compile_info.empty())
-                    INFO("Shader info: %1", compile_info);
+                DEBUG("Shader was built successfully. [name='%1', info='%2']", mName, compile_info);
             }
 
             if (mShader)
@@ -2284,6 +2216,8 @@ private:
         }
         virtual bool IsValid() const override
         { return mShader != 0; }
+        virtual void SetName(const std::string& name) override
+        { mName = name; }
 
         GLuint GetName() const
         { return mShader; }
@@ -2294,6 +2228,7 @@ private:
     private:
         GLuint mShader  = 0;
         GLuint mVersion = 0;
+        std::string mName;
     };
     struct Extensions;
 

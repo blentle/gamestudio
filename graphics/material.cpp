@@ -34,6 +34,65 @@
 #include "graphics/texture.h"
 #include "graphics/program.h"
 #include "graphics/resource.h"
+#include "graphics/loader.h"
+
+//                  == Notes about shaders ==
+// 1. Shaders are specific to a device within compatibility constraints
+// but a GLES 2 device context cannot use GL ES 3 shaders for example.
+//
+// 2. Logically shaders are part of the higher level graphics system, i.e.
+// they express some particular algorithm/technique in a device dependant
+// way, so logically they belong to the higher layer (i.e. roughly painter
+// material level of abstraction).
+//
+// Basically this means that the device abstraction breaks down because
+// we need this device specific (shader) code that belongs to the higher
+// level of the system.
+//
+// A fancy way of solving this would be to use a shader translator, i.e.
+// a device that can transform shader from one language version to another
+// language version or even from one shader language to another, for example
+// from GLSL to HLSL/MSL/SPIR-V.  In fact this is exactly what libANGLE does
+// when it implements GL ES2/3 on top of DX9/11/Vulkan/GL/Metal.
+// But this only works when the particular underlying implementations can
+// support similar feature sets. For example instanced rendering is not part
+// of ES 2 but >= ES 3 so therefore it's not possible to translate ES3 shaders
+// using instanced rendering into ES2 shaders directly but the whole rendering
+// path must be changed to not use instanced rendering.
+//
+// This then means that if a system was using a shader translation layer (such
+// as libANGLE) any decent system would still require several different rendering
+// paths. For example a primary "high end path" and a "fallback path" for low end
+// devices. These different paths would use different feature sets (such as instanced
+// rendering) and also (in many cases) require different shaders to be written to
+// fully take advantage of the graphics API features.
+// Then these two different rendering paths would/could use a shader translation
+// layer in order to use some specific graphics API. (through libANGLE)
+//
+//            <<Device>>
+//              |    |
+//     <ES2 Device> <ES3 Device>
+//             |      |
+//            <libANGLE>
+//                 |
+//      [GL/DX9/DX11/VULKAN/Metal]
+//
+// Where "ES2 Device" provides the low end graphics support and "ES3 Device"
+// device provides the "high end" graphics rendering path support.
+// Both device implementations would require their own shaders which would then need
+// to be translated to the device specific shaders matching the feature level.
+//
+// Finally, who should own the shaders and who should edit them ?
+//   a) The person who is using the graphics library ?
+//   b) The person who is writing the graphics library ?
+//
+// The answer seems to be mostly the latter (b), i.e. in most cases the
+// graphics functionality should work "out of the box" and the graphics
+// library should *just work* without the user having to write shaders.
+// However there's a need that user might want to write their own special
+// shaders because they're cool to do so and want some special customized
+// shader effect.
+//
 
 namespace {
     using namespace base;
@@ -724,7 +783,7 @@ std::unique_ptr<MaterialClass> MaterialClass::FromJson(const data::Reader& data)
     return klass;
 }
 
-Shader* ColorClass::GetShader(Device& device) const
+Shader* ColorClass::GetShader(const State& state, Device& device) const
 {
     if (auto* shader = device.FindShader(GetProgramId()))
         return shader;
@@ -750,6 +809,7 @@ void main()
     ShaderData data;
     data.gamma      = mGamma;
     data.base_color = mColor;
+    shader->SetName(mStatic ? mName : "ColorShader");
     shader->CompileSource(mStatic ? FoldUniforms(src, data) : src);
     return shader;
 }
@@ -757,6 +817,7 @@ size_t ColorClass::GetHash() const
 {
     size_t hash = 0;
     hash = base::hash_combine(hash, mClassId);
+    hash = base::hash_combine(hash, mName);
     hash = base::hash_combine(hash, mSurfaceType);
     hash = base::hash_combine(hash, mGamma);
     hash = base::hash_combine(hash, mStatic);
@@ -793,6 +854,7 @@ void ColorClass::IntoJson(data::Writer& data) const
 {
     data.Write("type", Type::Color);
     data.Write("id",      mClassId);
+    data.Write("name",    mName);
     data.Write("surface", mSurfaceType);
     data.Write("gamma",   mGamma);
     data.Write("static",  mStatic);
@@ -802,6 +864,7 @@ void ColorClass::IntoJson(data::Writer& data) const
 bool ColorClass::FromJson2(const data::Reader& data)
 {
     data.Read("id",      &mClassId);
+    data.Read("name",    &mName);
     data.Read("surface", &mSurfaceType);
     data.Read("gamma",   &mGamma);
     data.Read("static",  &mStatic);
@@ -810,7 +873,7 @@ bool ColorClass::FromJson2(const data::Reader& data)
     return true;
 }
 
-Shader* GradientClass::GetShader(Device& device) const
+Shader* GradientClass::GetShader(const State& state, Device& device) const
 {
     if (auto* shader = device.FindShader(GetProgramId()))
         return shader;
@@ -859,6 +922,7 @@ void main()
     data.color_map[2] = mColorMap[2];
     data.color_map[3] = mColorMap[3];
     data.gradient_offset = mOffset;
+    shader->SetName(mStatic ? mName : "GradientShader");
     shader->CompileSource(mStatic ? FoldUniforms(src, data) : src);
     return shader;
 }
@@ -866,6 +930,7 @@ size_t GradientClass::GetHash() const
 {
     size_t hash = 0;
     hash = base::hash_combine(hash, mClassId);
+    hash = base::hash_combine(hash, mName);
     hash = base::hash_combine(hash, mSurfaceType);
     hash = base::hash_combine(hash, mGamma);
     hash = base::hash_combine(hash, mStatic);
@@ -921,6 +986,7 @@ void GradientClass::IntoJson(data::Writer& data) const
 {
     data.Write("type",       Type::Gradient);
     data.Write("id",         mClassId);
+    data.Write("name",       mName);
     data.Write("surface",    mSurfaceType);
     data.Write("gamma",      mGamma);
     data.Write("static",     mStatic);
@@ -934,6 +1000,7 @@ void GradientClass::IntoJson(data::Writer& data) const
 bool GradientClass::FromJson2(const data::Reader& data)
 {
     data.Read("id",         &mClassId);
+    data.Read("name",       &mName);
     data.Read("surface",    &mSurfaceType);
     data.Read("gamma",      &mGamma);
     data.Read("static",     &mStatic);
@@ -950,6 +1017,7 @@ SpriteClass::SpriteClass(const SpriteClass& other, bool copy)
    : mSprite(other.mSprite, copy)
 {
     mClassId         = copy ? other.mClassId : base::RandomString(10);
+    mName            = other.mName;
     mSurfaceType     = other.mSurfaceType;
     mGamma           = other.mGamma;
     mStatic          = other.mStatic;
@@ -966,7 +1034,7 @@ SpriteClass::SpriteClass(const SpriteClass& other, bool copy)
     mFlags           = other.mFlags;
 }
 
-Shader* SpriteClass::GetShader(Device& device) const
+Shader* SpriteClass::GetShader(const State& state, Device& device) const
 {
     if (auto* shader = device.FindShader(GetProgramId()))
         return shader;
@@ -1081,6 +1149,7 @@ void main()
     data.texture_scale    = mTextureScale;
     data.texture_velocity = mTextureVelocity;
     data.texture_rotation = mTextureRotation;
+    shader->SetName(mStatic ? mName : "SpriteShader");
     shader->CompileSource(mStatic ? FoldUniforms(src, data) : src);
     return shader;
 }
@@ -1089,6 +1158,7 @@ std::size_t SpriteClass::GetHash() const
 {
     size_t hash = 0;
     hash = base::hash_combine(hash, mClassId);
+    hash = base::hash_combine(hash, mName);
     hash = base::hash_combine(hash, mSurfaceType);
     hash = base::hash_combine(hash, mGamma);
     hash = base::hash_combine(hash, mStatic);
@@ -1219,6 +1289,7 @@ void SpriteClass::IntoJson(data::Writer& data) const
 {
     data.Write("type", Type::Sprite);
     data.Write("id", mClassId);
+    data.Write("name", mName);
     data.Write("surface", mSurfaceType);
     data.Write("gamma", mGamma);
     data.Write("static", mStatic);
@@ -1239,6 +1310,7 @@ void SpriteClass::IntoJson(data::Writer& data) const
 bool SpriteClass::FromJson2(const data::Reader& data)
 {
     data.Read("id", &mClassId);
+    data.Read("name", &mName);
     data.Read("surface", &mSurfaceType);
     data.Read("gamma", &mGamma);
     data.Read("static", &mStatic);
@@ -1339,6 +1411,7 @@ SpriteClass& SpriteClass::operator=(const SpriteClass& other)
         return *this;
     SpriteClass tmp(other, true);
     std::swap(mClassId        , tmp.mClassId);
+    std::swap(mName           , tmp.mName);
     std::swap(mSurfaceType    , tmp.mSurfaceType);
     std::swap(mGamma          , tmp.mGamma);
     std::swap(mStatic         , tmp.mStatic);
@@ -1362,6 +1435,7 @@ TextureMap2DClass::TextureMap2DClass(const TextureMap2DClass& other, bool copy)
     : mTexture(other.mTexture, copy)
 {
     mClassId         = copy ? other.mClassId : base::RandomString(10);
+    mName            = other.mName;
     mSurfaceType     = other.mSurfaceType;
     mGamma           = other.mGamma;
     mStatic          = other.mStatic;
@@ -1377,7 +1451,7 @@ TextureMap2DClass::TextureMap2DClass(const TextureMap2DClass& other, bool copy)
     mFlags           = other.mFlags;
 }
 
-Shader* TextureMap2DClass::GetShader(Device& device) const
+Shader* TextureMap2DClass::GetShader(const State& state, Device& device) const
 {
     if (auto* shader = device.FindShader(GetProgramId()))
         return shader;
@@ -1486,6 +1560,7 @@ void main()
     data.texture_scale    = mTextureScale;
     data.texture_velocity = mTextureVelocity;
     data.texture_rotation = mTextureRotation;
+    shader->SetName(mStatic ? mName : "Texture2DShader");
     shader->CompileSource(mStatic ? FoldUniforms(src, data) : src);
     return shader;
 }
@@ -1493,6 +1568,7 @@ std::size_t TextureMap2DClass::GetHash() const
 {
     size_t hash = 0;
     hash = base::hash_combine(hash, mClassId);
+    hash = base::hash_combine(hash, mName);
     hash = base::hash_combine(hash, mSurfaceType);
     hash = base::hash_combine(hash, mGamma);
     hash = base::hash_combine(hash, mStatic);
@@ -1609,6 +1685,7 @@ void TextureMap2DClass::IntoJson(data::Writer& data) const
 {
     data.Write("type", Type::Texture);
     data.Write("id", mClassId);
+    data.Write("name", mName);
     data.Write("surface", mSurfaceType);
     data.Write("gamma", mGamma);
     data.Write("static", mStatic);
@@ -1628,6 +1705,7 @@ void TextureMap2DClass::IntoJson(data::Writer& data) const
 bool TextureMap2DClass::FromJson2(const data::Reader& data)
 {
     data.Read("id", &mClassId);
+    data.Read("name", &mName);
     data.Read("surface", &mSurfaceType);
     data.Read("gamma", &mGamma);
     data.Read("static", &mStatic);
@@ -1719,6 +1797,7 @@ TextureMap2DClass& TextureMap2DClass::operator=(const TextureMap2DClass& other)
 
     TextureMap2DClass tmp(other, true);
     std::swap(mClassId        , tmp.mClassId);
+    std::swap(mName           , tmp.mName);
     std::swap(mSurfaceType    , tmp.mSurfaceType);
     std::swap(mGamma          , tmp.mGamma);
     std::swap(mStatic         , tmp.mStatic);
@@ -1739,6 +1818,7 @@ TextureMap2DClass& TextureMap2DClass::operator=(const TextureMap2DClass& other)
 CustomMaterialClass::CustomMaterialClass(const CustomMaterialClass& other, bool copy)
 {
     mClassId     = copy ? other.mClassId : base::RandomString(10);
+    mName        = other.mName;
     mShaderUri   = other.mShaderUri;
     mShaderSrc   = other.mShaderSrc;
     mUniforms    = other.mUniforms;
@@ -1835,20 +1915,49 @@ std::unordered_set<std::string> CustomMaterialClass::GetTextureMapNames() const
     return set;
 }
 
-gfx::Shader* CustomMaterialClass::GetShader(Device& device) const
+Shader* CustomMaterialClass::GetShader(const State& state, Device& device) const
 {
-    if (auto* shader = device.FindShader(mClassId))
+    const auto& id = GetProgramId();
+    if (auto* shader = device.FindShader(id))
         return shader;
-    auto* shader = device.MakeShader(mClassId);
+
+    auto* shader = device.MakeShader(id);
     if (!mShaderSrc.empty())
-        shader->CompileSource(mShaderSrc);
-    else shader->CompileFile(mShaderUri);
+    {
+        shader->SetName("CustomShaderSource");
+        if (!shader->CompileSource(mShaderSrc))
+        {
+            ERROR("Failed to compile custom material shader source. [class='%1']", mName);
+            return nullptr;
+        }
+        DEBUG("Compiled custom shader source. [name='%1']", mName);
+    }
+    else
+    {
+        shader->SetName(mShaderUri);
+        const auto& buffer = gfx::LoadResource(mShaderUri);
+        if (!buffer)
+        {
+            ERROR("Failed to load custom material shader source file. [class='%1', uri='%1']", mName, mShaderUri);
+            return nullptr;
+        }
+
+        const char* beg = (const char*)buffer->GetData();
+        const char* end = beg + buffer->GetSize();
+        if (!shader->CompileSource(std::string(beg, end)))
+        {
+            ERROR("Failed to compile custom material shader source. [name='%1', uri='%2']", mName, mShaderUri);
+            return nullptr;
+        }
+        DEBUG("Compiled shader source file. [name='%1', uri='%2']", mName, mShaderUri);
+    }
     return shader;
 }
 std::size_t CustomMaterialClass::GetHash() const
 {
     size_t hash = 0;
     hash = base::hash_combine(hash, mClassId);
+    hash = base::hash_combine(hash, mName);
     hash = base::hash_combine(hash, mShaderUri);
     hash = base::hash_combine(hash, mShaderSrc);
     hash = base::hash_combine(hash, mSurfaceType);
@@ -1890,7 +1999,12 @@ std::size_t CustomMaterialClass::GetHash() const
 }
 std::string CustomMaterialClass::GetProgramId() const
 {
-    return mClassId;
+    size_t hash = 0;
+    if (!mShaderSrc.empty())
+        hash = base::hash_combine(hash, mShaderSrc);
+    if (!mShaderUri.empty())
+        hash = base::hash_combine(hash, mShaderUri);
+    return std::to_string(hash);
 }
 std::unique_ptr<MaterialClass> CustomMaterialClass::Copy() const
 { return std::make_unique<CustomMaterialClass>(*this); }
@@ -1967,6 +2081,7 @@ void CustomMaterialClass::IntoJson(data::Writer& data) const
 {
     data.Write("type",  Type::Custom);
     data.Write("id",          mClassId);
+    data.Write("name",        mName);
     data.Write("shader_uri",  mShaderUri);
     data.Write("shader_src",  mShaderSrc);
     data.Write("surface",     mSurfaceType);
@@ -2015,6 +2130,7 @@ void CustomMaterialClass::IntoJson(data::Writer& data) const
 bool CustomMaterialClass::FromJson2(const data::Reader& data)
 {
     data.Read("id",         &mClassId);
+    data.Read("name",       &mName);
     data.Read("shader_uri", &mShaderUri);
     data.Read("shader_src", &mShaderSrc);
     data.Read("surface",    &mSurfaceType);
@@ -2119,6 +2235,7 @@ CustomMaterialClass& CustomMaterialClass::operator=(const CustomMaterialClass& o
 
     CustomMaterialClass tmp(other, true);
     std::swap(mClassId, tmp.mClassId);
+    std::swap(mName, tmp.mName);
     std::swap(mShaderUri, tmp.mShaderUri);
     std::swap(mShaderSrc, tmp.mShaderSrc);
     std::swap(mUniforms, tmp.mUniforms);
@@ -2150,6 +2267,16 @@ void MaterialClassInst::ApplyDynamicState(const Environment& env, Device& device
         raster.blending = RasterState::Blending::Additive;
 
     raster.premultiplied_alpha = mClass->PremultipliedAlpha();
+}
+
+Shader* MaterialClassInst::GetShader(const Environment& env, Device& device) const
+{
+    MaterialClass::State state;
+    state.editing_mode  = env.editing_mode;
+    state.render_points = env.render_points;
+    state.material_time = mRuntime;
+    state.uniforms      = mUniforms;
+    return mClass->GetShader(state, device);
 }
 
 TextMaterial::TextMaterial(const TextBuffer& text)  : mText(text)
@@ -2208,7 +2335,7 @@ void TextMaterial::ApplyDynamicState(const Environment& env, Device& device, Pro
 }
 void TextMaterial::ApplyStaticState(gfx::Device& device, gfx::Program& program) const
 {}
-Shader* TextMaterial::GetShader(gfx::Device& device) const
+Shader* TextMaterial::GetShader(const Environment& env, Device& device) const
 {
 constexpr auto* src = R"(
 #version 100
@@ -2224,6 +2351,7 @@ void main() {
         )";
     auto* shader = device.MakeShader("text-shader");
     shader->CompileSource(src);
+    shader->SetName("TextShader");
     return shader;
 }
 std::string TextMaterial::GetProgramId() const

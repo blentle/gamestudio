@@ -76,6 +76,8 @@ namespace gui
         void on_actionPause_triggered();
         void on_actionStop_triggered();
         void on_actionSave_triggered();
+        void on_actionReloadShaders_triggered();
+        void on_actionReloadTextures_triggered();
         void on_actionRemoveTexture_triggered();
         void on_btnReloadShader_clicked();
         void on_btnSelectShader_clicked();
@@ -88,6 +90,7 @@ namespace gui
         void on_btnSelectTextureRect_clicked();
         void on_textures_currentRowChanged(int row);
         void on_textures_customContextMenuRequested(const QPoint&);
+        void on_materialName_textChanged(const QString& text);
         void on_materialType_currentIndexChanged(int);
         void on_surfaceType_currentIndexChanged(int);
         void on_gamma_valueChanged(double value);

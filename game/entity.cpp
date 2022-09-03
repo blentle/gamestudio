@@ -208,23 +208,22 @@ void DrawableItemClass::IntoJson(data::Writer& data) const
     data.Write("renderpass",  mRenderPass);
     data.Write("renderstyle", mRenderStyle);
     data.Write("timescale",   mTimeScale);
-    for (const auto& param : mMaterialParams)
+
+    // use an ordered set for persisting the data to make sure
+    // that the order in which the uniforms are written out is
+    // defined in order to avoid unnecessary changes (as perceived
+    // by a version control such as Git) when there's no actual
+    // change in the data.
+    std::set<std::string> keys;
+    for (const auto& [key, value] : mMaterialParams)
+        keys.insert(key);
+
+    for (const auto& key : keys)
     {
+        const auto* param = base::SafeFind(mMaterialParams, key);
         auto chunk = data.NewWriteChunk();
-        chunk->Write("name", param.first);
-        if (const auto* ptr = std::get_if<float>(&param.second))
-            chunk->Write("value", *ptr);
-        else if (const auto* ptr = std::get_if<int>(&param.second))
-            chunk->Write("value", *ptr);
-        else if (const auto* ptr = std::get_if<glm::vec2>(&param.second))
-            chunk->Write("value", *ptr);
-        else if (const auto* ptr = std::get_if<glm::vec3>(&param.second))
-            chunk->Write("value", *ptr);
-        else if (const auto* ptr = std::get_if<glm::vec4>(&param.second))
-            chunk->Write("value", *ptr);
-        else if (const auto* ptr = std::get_if<Color4f>(&param.second))
-            chunk->Write("value", *ptr);
-        else BUG("Unhandled uniform type.");
+        chunk->Write("name", key);
+        chunk->Write("value", *param);
         data.AppendChunk("material_params", std::move(chunk));
     }
 }
@@ -1352,6 +1351,11 @@ std::optional<EntityClass> EntityClass::FromJson(const data::Reader& data)
 EntityClass EntityClass::Clone() const
 {
     EntityClass ret;
+    ret.mName = mName;
+    ret.mFlags = mFlags;
+    ret.mLifetime = mLifetime;
+    ret.mScriptFile = mScriptFile;
+
     std::unordered_map<const EntityNodeClass*, const EntityNodeClass*> map;
 
     // make a deep clone of the nodes.
