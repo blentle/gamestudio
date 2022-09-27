@@ -55,7 +55,7 @@ namespace gui
        ~SceneWidget();
 
         virtual QString GetId() const override;
-        virtual void Initialize(const UISettings& settings);
+        virtual void Initialize(const UISettings& settings) override;
         virtual void AddActions(QToolBar& bar) override;
         virtual void AddActions(QMenu& menu) override;
         virtual bool SaveState(Settings& settings) const override;
@@ -109,6 +109,7 @@ namespace gui
         void on_actionNodeDuplicate_triggered();
         void on_actionNodeMoveUpLayer_triggered();
         void on_actionNodeMoveDownLayer_triggered();
+        void on_actionEntityVarRef_triggered();
         void on_btnEditScript_clicked();
         void on_btnResetScript_clicked();
         void on_btnAddScript_clicked();

@@ -530,7 +530,7 @@ void unit_test_scene_interface()
         node.SetTranslation(glm::vec2(50.0f, 60.0f));
         node.SetDrawable(draw);
         node.SetRigidBody(body);
-        entity->LinkChild(nullptr, entity->AddNode(std::move(node)));
+        entity->LinkChild(nullptr, entity->AddNode(node));
 
         // add some entity script vars
         entity->AddScriptVar(game::ScriptVar("int_var", 123, false));
@@ -545,6 +545,17 @@ void unit_test_scene_interface()
         strs.push_back("foo");
         strs.push_back("bar");
         entity->AddScriptVar(game::ScriptVar("str_array", strs, false));
+
+        // node reference
+        game::ScriptVar::EntityNodeReference  ref;
+        ref.id = node.GetId();
+        entity->AddScriptVar(game::ScriptVar("entity_node_var", ref, false));
+
+        // node reference array
+        std::vector<game::ScriptVar::EntityNodeReference> refs;
+        refs.resize(1);
+        refs[0].id = node.GetId();
+        entity->AddScriptVar(game::ScriptVar("entity_node_var_arr", refs, false));
     }
 
     game::SceneClass scene;
@@ -555,6 +566,18 @@ void unit_test_scene_interface()
         scene_node.SetEntity(entity);
         scene_node.SetTranslation(glm::vec2(30.0f, 40.0f));
         scene.LinkChild(nullptr, scene.AddNode(scene_node));
+
+        // add a reference to the entity
+        game::ScriptVar::EntityReference  ref;
+        ref.id = scene_node.GetId();
+        scene.AddScriptVar(game::ScriptVar("entity_var", ref, false));
+
+        // add array reference to the entity
+        std::vector<game::ScriptVar::EntityReference> refs;
+        refs.resize(1);
+        refs[0].id = scene_node.GetId();
+        scene.AddScriptVar(game::ScriptVar("entity_var_arr", refs, false));
+
     }
 
     // add some scripting variable types
@@ -633,6 +656,18 @@ function test(scene)
    test_bool(scene.bool_var,    true)
    test_vec2(scene.vec2_var,    -1.0, -2.0)
 
+   print(tostring(scene.entity_var))
+   if scene.entity_var:GetName() ~= 'test_entity_1' then
+       error('entity variable not set')
+   end
+   -- test assigning to the scene entity reference variable
+   scene.entity_var = scene:GetEntity(0)
+   scene.entity_var = nil
+
+   if scene.entity_var_arr[1]:GetName() ~= 'test_entity_1' then
+      error('entity variable array not set properly.')
+   end
+
    test_int(scene:GetNumEntities(), 1)
    if scene:FindEntityByInstanceId('sdsdfsg') ~= nil then
      error('fail')
@@ -657,6 +692,21 @@ function test(scene)
    test_bool(entity.bool_var,    false)
    test_vec2(entity.vec2_var,    3.0, -1.0)
    test_int(entity.read_only,    43)
+
+   -- test reading the node reference
+   print(tostring(entity_node_var))
+   if entity.entity_node_var:GetName() ~= 'foobar' then
+      error('entity node entity variable reference is not resolved properly.')
+   end
+   -- test assigning to the node reference var
+   entity.entity_node_var = entity:GetNode(0)
+   -- test assigning nil
+   entity.entity_node_var = nil
+
+   if entity.entity_node_var_arr[1]:GetName() ~= 'foobar' then
+       error('entity node entity variable reference is not resolve properly.')
+   end
+
 
    -- writing read-only should raise an error
    if pcall(try_set_read_only, entity) then
@@ -776,7 +826,7 @@ end
 
     TestLoader loader;
 
-    engine::ScriptEngine script(".");
+    engine::LuaRuntime script(".", "", "", "");
     script.SetDataLoader(&loader);
     script.Init();
     script.BeginPlay(&scene);
@@ -877,7 +927,7 @@ end
     TestLoader loader;
 
     game::Scene scene(scene_class);
-    engine::ScriptEngine script(".");
+    engine::LuaRuntime script(".", "", "", "");
     script.SetDataLoader(&loader);
     script.Init();
     script.BeginPlay(&scene);
@@ -957,7 +1007,7 @@ end
 
     TestLoader loader;
 
-    engine::ScriptEngine script(".");
+    engine::LuaRuntime script(".", "", "", "");
     script.SetDataLoader(&loader);
     script.Init();
     script.BeginPlay(&instance);
@@ -968,11 +1018,11 @@ end
     TEST_REQUIRE(script.GetNextAction(&action1));
     TEST_REQUIRE(script.GetNextAction(&action2));
 
-    const auto* e1 = std::get_if<engine::PostEventAction>(&action1);
-    const auto* e2 = std::get_if<engine::PostEventAction>(&action2);
+    auto* e1 = std::get_if<engine::PostEventAction>(&action1);
+    auto* e2 = std::get_if<engine::PostEventAction>(&action2);
     TEST_REQUIRE(e1 && e2);
-    TEST_REQUIRE(std::get<int>(e1->event.value) == 123);
-    TEST_REQUIRE(std::get<int>(e2->event.value) == 321);
+    TEST_REQUIRE(std::get<int>(e1->event.values["value"]) == 123);
+    TEST_REQUIRE(std::get<int>(e2->event.values["value"]) == 321);
 
 }
 
@@ -1039,7 +1089,7 @@ end
 
     TestLoader loader;
 
-    engine::ScriptEngine script(".");
+    engine::LuaRuntime script(".", "", "", "");
     script.SetDataLoader(&loader);
     script.Init();
     script.BeginPlay(&instance);
@@ -1054,15 +1104,15 @@ end
     TEST_REQUIRE(script.GetNextAction(&action3));
     TEST_REQUIRE(script.GetNextAction(&action4));
 
-    const auto* e1 = std::get_if<engine::PostEventAction>(&action1);
-    const auto* e2 = std::get_if<engine::PostEventAction>(&action2);
-    const auto* e3 = std::get_if<engine::PostEventAction>(&action3);
-    const auto* e4 = std::get_if<engine::PostEventAction>(&action4);
+    auto* e1 = std::get_if<engine::PostEventAction>(&action1);
+    auto* e2 = std::get_if<engine::PostEventAction>(&action2);
+    auto* e3 = std::get_if<engine::PostEventAction>(&action3);
+    auto* e4 = std::get_if<engine::PostEventAction>(&action4);
     TEST_REQUIRE(e1 && e2 && e3 && e4);
-    TEST_REQUIRE(std::get<int>(e1->event.value) == 123);
-    TEST_REQUIRE(std::get<std::string>(e2->event.value) == "huhu");
-    TEST_REQUIRE(std::get<float>(e3->event.value) == real::float32(123.5f));
-    TEST_REQUIRE(std::get<glm::vec2>(e4->event.value) == glm::vec2(45.0f, 80.0f));
+    TEST_REQUIRE(std::get<int>(e1->event.values["value"]) == 123);
+    TEST_REQUIRE(std::get<std::string>(e2->event.values["value"]) == "huhu");
+    TEST_REQUIRE(std::get<float>(e3->event.values["value"]) == real::float32(123.5f));
+    TEST_REQUIRE(std::get<glm::vec2>(e4->event.values["value"]) == glm::vec2(45.0f, 80.0f));
 }
 
 void unit_test_entity_shared_globals()
@@ -1108,7 +1158,7 @@ end
 
     TestLoader loader;
 
-    engine::ScriptEngine script(".");
+    engine::LuaRuntime script(".", "", "", "");
     script.SetDataLoader(&loader);
     script.Init();
     script.BeginPlay(&instance);
@@ -1116,9 +1166,9 @@ end
 
     engine::Action action;
     TEST_REQUIRE(script.GetNextAction(&action));
-    const auto* event = std::get_if<engine::PostEventAction>(&action);
+    auto* event = std::get_if<engine::PostEventAction>(&action);
     TEST_REQUIRE(event->event.message == "bar");
-    TEST_REQUIRE(std::get<int>(event->event.value) == 123);
+    TEST_REQUIRE(std::get<int>(event->event.values["value"]) == 123);
 }
 
 void unit_test_game_main_script_load_success()
@@ -1134,8 +1184,9 @@ end
 
         TestLoader loader;
 
-        engine::LuaGame game("", "game_main_script_test.lua", "", "");
+        engine::LuaRuntime game("", "game_main_script_test.lua", "", "");
         game.SetDataLoader(&loader);
+        game.Init();
         TEST_REQUIRE(game.LoadGame());
 
         engine::Action action;
@@ -1165,8 +1216,9 @@ end
     )");
         TestLoader loader;
 
-        engine::LuaGame game("", "game_main_script_test.lua", "", "");
+        engine::LuaRuntime game("", "game_main_script_test.lua", "", "");
         game.SetDataLoader(&loader);
+        game.Init();
         TEST_REQUIRE(game.LoadGame());
 
         engine::Action action;
@@ -1189,17 +1241,17 @@ endkasd
     {
         TestLoader loader;
 
-        engine::LuaGame game("", "this-file-doesnt-exist.lua", "", "");
+        engine::LuaRuntime game("", "this-file-doesnt-exist.lua", "", "");
         game.SetDataLoader(&loader);
-        TEST_REQUIRE(!game.LoadGame());
+        TEST_EXCEPTION(game.Init());
     }
 
     // broken Lua code in file.
     {
         TestLoader loader;
-        engine::LuaGame game("", "broken.lua", "", "");
+        engine::LuaRuntime game("", "broken.lua", "", "");
         game.SetDataLoader(&loader);
-        TEST_EXCEPTION(game.LoadGame());
+        TEST_EXCEPTION(game.Init());
     }
 
     // requires broken lua
@@ -1211,9 +1263,9 @@ function LoadGame()
 end
     )");
         TestLoader loader;
-        engine::LuaGame game("", "game_main_script_test.lua", "", "");
+        engine::LuaRuntime game("", "game_main_script_test.lua", "", "");
         game.SetDataLoader(&loader);
-        TEST_EXCEPTION(game.LoadGame());
+        TEST_EXCEPTION(game.Init());
 
     }
 
@@ -1226,10 +1278,9 @@ function LoadGame()
 end
     )");
         TestLoader loader;
-        engine::LuaGame game("", "game_main_script_test.lua", "", "");
+        engine::LuaRuntime game("", "game_main_script_test.lua", "", "");
         game.SetDataLoader(&loader);
-        TEST_EXCEPTION(game.LoadGame());
-
+        TEST_EXCEPTION(game.Init());
     }
 }
 

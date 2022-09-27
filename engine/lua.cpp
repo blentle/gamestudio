@@ -174,15 +174,132 @@ using namespace game;
 // code turned into "Lua game errors" which is not what we should want to do!!
 
 namespace {
-class GameError : public std::exception {
+using GameError = std::runtime_error;
+
+// data policy class for ArrayInterface below
+// uses a non-owning pointer to data that comes from
+// somewhere else such as ScriptVar
+template<typename T>
+class ArrayDataPointer
+{
 public:
-    GameError(std::string&& message)
-      : mMessage(std::move(message))
+    ArrayDataPointer(std::vector<T>* array)
+      : mArray(array)
     {}
-    virtual const char* what() noexcept
-    { return mMessage.c_str(); }
+protected:
+    ArrayDataPointer() = default;
+    void CommitChanges()
+    {
+        // do nothing is intentional.
+    }
+    std::vector<T>& GetArray()
+    { return *mArray; }
+    const std::vector<T>& GetArray() const
+    { return *mArray; }
 private:
-    std::string mMessage;
+    std::vector<T>* mArray = nullptr;
+};
+
+// data policy class for ArrayInterface below.
+// has a copy of the data and then exposes a pointer to it.
+template<typename T>
+class ArrayDataObject
+{
+public:
+    ArrayDataObject(const std::vector<T>& array)
+      : mArrayData(array)
+    {}
+    ArrayDataObject(std::vector<T>&& array)
+      : mArrayData(array)
+    {}
+protected:
+    ArrayDataObject() = default;
+    void CommitChanges()
+    {
+        // do nothing intentional.
+    }
+    std::vector<T>& GetArray()
+    { return mArrayData; }
+    const std::vector<T>& GetArray() const
+    { return mArrayData; }
+private:
+    std::vector<T> mArrayData;
+};
+
+template<typename T>
+class ArrayObjectReference;
+
+template<>
+class ArrayObjectReference<Entity*>
+{
+public:
+    ArrayObjectReference(const ScriptVar* var, Scene* scene)
+      : mVar(var)
+      , mScene(scene)
+    {
+        // resolve object IDs to the actual objects
+        const auto& refs = mVar->GetArray<ScriptVar::EntityReference>();
+        for (const auto& ref : refs)
+            mEntities.push_back(mScene->FindEntityByInstanceId(ref.id));
+    }
+protected:
+    ArrayObjectReference() = default;
+    void CommitChanges()
+    {
+        // resolve entity objects back into their IDs
+        // and store the changes in the script variable.
+        std::vector<ScriptVar::EntityReference> refs;
+        for (auto* entity : mEntities)
+        {
+            ScriptVar::EntityReference ref;
+            ref.id = entity ? entity->GetId() : "";
+        }
+        mVar->SetArray(std::move(refs));
+    }
+    std::vector<Entity*>& GetArray()
+    { return mEntities; }
+    const std::vector<Entity*>& GetArray() const
+    { return mEntities; }
+private:
+    const ScriptVar* mVar = nullptr;
+    Scene* mScene = nullptr;
+    std::vector<Entity*> mEntities;
+};
+
+template<>
+class ArrayObjectReference<EntityNode*>
+{
+public:
+    ArrayObjectReference(const ScriptVar* var, Entity* entity)
+      : mVar(var)
+      , mEntity(entity)
+    {
+        const auto& refs = mVar->GetArray<ScriptVar::EntityNodeReference>();
+        // The entity node instance IDs are dynamic. since the
+        // reference is placed during design time it's based on the class IDs
+        for (const auto& ref : refs)
+            mNodes.push_back(mEntity->FindNodeByClassId(ref.id));
+    }
+protected:
+    ArrayObjectReference() = default;
+    void CommitChanges()
+    {
+        std::vector<ScriptVar::EntityNodeReference> refs;
+        for (auto* node : mNodes)
+        {
+            ScriptVar::EntityNodeReference ref;
+            ref.id = node ? node->GetClassId() : "";
+        }
+        mVar->SetArray(std::move(refs));
+    }
+    std::vector<EntityNode*>& GetArray()
+    { return mNodes; }
+    const std::vector<EntityNode*>& GetArray() const
+    { return mNodes; }
+private:
+    const ScriptVar* mVar = nullptr;
+    Entity* mEntity = nullptr;
+    std::vector<EntityNode*> mNodes;
 };
 
 // template to adapt an underlying std::vector
@@ -190,8 +307,8 @@ private:
 // is not owned by the array interface object and
 // may come for example from a scene/entity scripting
 // variable when the variable is an array.
-template<typename T>
-class ArrayInterface {
+template<typename T, template<typename> class DataPolicy = ArrayDataPointer>
+class ArrayInterface : public DataPolicy<T> {
 public:
     using value_type = typename std::vector<T>::value_type;
     // this was using const_iterator and i'm not sure where that
@@ -199,28 +316,41 @@ public:
     // using const_iterator makes emscripten build shit itself.
     using iterator   = typename std::vector<T>::iterator;
     using size_type  = typename std::vector<T>::size_type;
-    ArrayInterface(std::vector<T>* vector, bool read_only)
-      : mArray(vector)
+
+    using BaseClass = DataPolicy<T>;
+
+    template<typename Arg0>
+    ArrayInterface(bool read_only, Arg0&& arg0)
+      : BaseClass(std::forward<Arg0>(arg0))
       , mReadOnly(read_only)
     {}
-    iterator begin() noexcept
-    { return mArray->begin(); }
-    iterator end() noexcept
-    { return mArray->end(); }
-    size_type size() const noexcept
-    { return mArray->size(); }
-    void push_back(const T& value)
-    { mArray->push_back(value); }
-    bool empty() const noexcept
-    { return mArray->empty(); }
+    template<typename Arg0, typename Arg1>
+    ArrayInterface(bool read_only, Arg0&& arg0, Arg1&& arg1)
+      : BaseClass(std::forward<Arg0>(arg0),
+                  std::forward<Arg1>(arg1))
+      , mReadOnly(read_only)
+    {}
 
+    iterator begin() noexcept
+    { return BaseClass::GetArray().begin(); }
+    iterator end() noexcept
+    { return BaseClass::GetArray().end(); }
+    size_type size() const noexcept
+    { return BaseClass::GetArray().size(); }
+    bool empty() const noexcept
+    { return BaseClass::GetArray().empty(); }
+    void push_back(const T& value)
+    {
+        BaseClass::GetArray().push_back(value);
+        BaseClass::CommitChanges();
+    }
     T GetItemFromLua(unsigned index) const
     {
         // lua uses 1 based indexing.
         index = index - 1;
         if (index >= size())
             throw GameError("ArrayInterface access out of bounds.");
-        return (*mArray)[index];
+        return BaseClass::GetArray()[index];
     }
     void SetItemFromLua(unsigned index, const T& item)
     {
@@ -230,31 +360,35 @@ public:
             throw GameError("ArrayInterface access out of bounds.");
         if (IsReadOnly())
             throw GameError("Trying to write to read only array.");
-        (*mArray)[index] = item;
+        BaseClass::GetArray()[index] = item;
+        BaseClass::CommitChanges();
     }
     void PopBack()
     {
         if (IsReadOnly())
             throw GameError("Trying to modify read only array.");
-        auto& arr = *mArray;
+        auto& arr = BaseClass::GetArray();
         if (arr.empty())
             return;
         arr.pop_back();
+        BaseClass::CommitChanges();
     }
     void PopFront()
     {
         if (IsReadOnly())
             throw GameError("Trying to modify read only array.");
-        auto& arr = *mArray;
+        auto& arr = BaseClass::GetArray();
         if (arr.empty())
             return;
         arr.erase(arr.begin());
+        BaseClass::CommitChanges();
     }
     void Clear()
     {
         if (IsReadOnly())
             throw GameError("Trying to modify read only array.");
-        mArray->clear();
+        BaseClass::GetArray().clear();
+        BaseClass::CommitChanges();
     }
 
     T GetFirst() const
@@ -267,20 +401,19 @@ public:
     }
 
     T GetItem(unsigned index) const
-    { return base::SafeIndex(*mArray, index); }
+    { return base::SafeIndex(BaseClass::GetArray(), index); }
 
     bool IsReadOnly() const
     { return mReadOnly; }
 
 private:
-    std::vector<T>* mArray = nullptr;
     bool mReadOnly = false;
 };
 
-template<typename T>
+template<typename T, template<typename> class DataPolicy = ArrayDataPointer>
 void BindArrayInterface(sol::table& table, const char* name)
 {
-    using Type = ArrayInterface<T>;
+    using Type = ArrayInterface<T, DataPolicy>;
 
     // regarding the array indexing for the subscript operator.
     // Lua uses 1 based indexing and allows (with built-in arrays)
@@ -341,153 +474,6 @@ void CallLua(const sol::protected_function& func, const Args&... args)
     throw std::runtime_error(err.what());
 }
 
-template<typename LuaGame>
-void BindEngine(sol::usertype<LuaGame>& engine, LuaGame& self)
-{
-    using namespace engine;
-    engine["Play"] = sol::overload(
-        [](LuaGame& self, ClassHandle<SceneClass> klass) {
-            if (!klass)
-                throw GameError("Nil scene class");
-            PlayAction play;
-            play.scene = game::CreateSceneInstance(klass);
-            auto* ret = play.scene.get();
-            self.PushAction(std::move(play));
-            return ret;
-        },
-        [](LuaGame& self, std::string name) {
-            auto klass = self.GetClassLib()->FindSceneClassByName(name);
-            if (!klass)
-                throw GameError("No such scene class: " + name);
-            PlayAction play;
-            play.scene = game::CreateSceneInstance(klass);
-            auto* ret = play.scene.get();
-            self.PushAction(std::move(play));
-            return ret;
-        });
-
-    engine["Suspend"] = [](LuaGame& self) {
-        SuspendAction suspend;
-        self.PushAction(suspend);
-    };
-    engine["EndPlay"] = [](LuaGame& self) {
-        EndPlayAction end;
-        self.PushAction(end);
-    };
-    engine["Resume"] = [](LuaGame& self) {
-        ResumeAction resume;
-        self.PushAction(resume);
-    };
-    engine["Quit"] = [](LuaGame& self, int exit_code) {
-        QuitAction quit;
-        quit.exit_code = exit_code;
-        self.PushAction(quit);
-    };
-    engine["Delay"] = [](LuaGame& self, float value) {
-        DelayAction delay;
-        delay.seconds = value;
-        self.PushAction(delay);
-    };
-    engine["GrabMouse"] = [](LuaGame& self, bool grab) {
-        GrabMouseAction mickey;
-        mickey.grab = grab;
-        self.PushAction(mickey);
-    };
-    engine["ShowMouse"] = [](LuaGame& self, bool show) {
-        ShowMouseAction mickey;
-        mickey.show = show;
-        self.PushAction(mickey);
-    };
-    engine["ShowDebug"] = [](LuaGame& self, bool show) {
-        ShowDebugAction act;
-        act.show = show;
-        self.PushAction(act);
-    };
-    engine["SetFullScreen"] = [](LuaGame& self, bool full_screen) {
-        RequestFullScreenAction fs;
-        fs.full_screen = full_screen;
-        self.PushAction(fs);
-    };
-    engine["BlockKeyboard"] = [](LuaGame& self, bool yes_no) {
-        BlockKeyboardAction block;
-        block.block = yes_no;
-        self.PushAction(block);
-    };
-    engine["BlockMouse"] = [](LuaGame& self, bool yes_no) {
-        BlockMouseAction block;
-        block.block = yes_no;
-        self.PushAction(block);
-    };
-    engine["DebugPrint"] = [](LuaGame& self, std::string message) {
-        DebugPrintAction action;
-        action.message = std::move(message);
-        self.PushAction(std::move(action));
-    };
-    engine["DebugDrawLine"] = sol::overload(
-        [](LuaGame& self, const glm::vec2&  a, const glm::vec2& b, const base::Color4f& color, float width) {
-            DebugDrawLine draw;
-            draw.a = FPoint(a.x, a.y);
-            draw.b = FPoint(b.x, b.y);
-            draw.color = color;
-            draw.width = width;
-            self.PushAction(std::move(draw));
-        },
-        [](LuaGame& self, const base::FPoint& a, const FPoint& b, const base::Color4f& color, float width) {
-            DebugDrawLine draw;
-            draw.a = a;
-            draw.b = b;
-            draw.color = color;
-            draw.width = width;
-            self.PushAction(std::move(draw));
-        },
-        [](LuaGame& self, float x0, float y0, float x1, float y1, const base::Color4f& color, float width) {
-            DebugDrawLine draw;
-            draw.a = base::FPoint(x0, y0);
-            draw.b = base::FPoint(x1, y1);
-            draw.color = color;
-            draw.width = width;
-            self.PushAction(std::move(draw));
-        });
-    engine["DebugClear"] = [](LuaGame& self) {
-        DebugClearAction action;
-        self.PushAction(action);
-    };
-    engine["OpenUI"] = sol::overload(
-        [](LuaGame& self, ClassHandle<uik::Window> model) {
-            if (!model)
-                throw GameError("Nil UI window object.");
-            // there's no "class" object for the UI system so we're just
-            // going to create a mutable copy and put that on the UI stack.
-            OpenUIAction action;
-            action.ui = std::make_shared<uik::Window>(*model);
-            self.PushAction(action);
-            return action.ui.get();
-        },
-        [](LuaGame& self, std::string name) {
-            auto handle = self.GetClassLib()->FindUIByName(name);
-            if (!handle)
-                throw GameError("No such UI: " + name);
-            OpenUIAction action;
-            action.ui = std::make_shared<uik::Window>(*handle);
-            self.PushAction(action);
-            return action.ui.get();
-        });
-    engine["CloseUI"] = [](LuaGame& self, int result) {
-        CloseUIAction action;
-        action.result = result;
-        self.PushAction(std::move(action));
-    };
-    engine["PostEvent"] = [](LuaGame& self, const GameEvent& event) {
-        PostEventAction action;
-        action.event = event;
-        self.PushAction(std::move(action));
-    };
-    engine["ShowDeveloperUI"] = [](LuaGame& self, bool show) {
-        ShowDeveloperUIAction action;
-        action.show = show;
-        self.PushAction(action);
-    };
-}
 template<typename Type>
 bool TestFlag(const Type& object, const std::string& name)
 {
@@ -511,53 +497,144 @@ sol::object ObjectFromScriptVarValue(const ScriptVar& var, sol::this_state state
 {
     sol::state_view lua(state);
     const auto type = var.GetType();
+    const auto read_only = var.IsReadOnly();
     if (type == ScriptVar::Type::Boolean)
     {
-        using ArrayType = ArrayInterface<bool>;
+        using ArrayType = ArrayInterface<bool, ArrayDataPointer>;
         if (var.IsArray())
-            return sol::make_object(lua, ArrayType(&var.GetArray<bool>(), var.IsReadOnly()));
+            return sol::make_object(lua, ArrayType(read_only, &var.GetArray<bool>()));
         return sol::make_object(lua, var.GetValue<bool>());
     }
     else if (type == ScriptVar::Type::Float)
     {
-        using ArrayType = ArrayInterface<float>;
+        using ArrayType = ArrayInterface<float, ArrayDataPointer>;
         if (var.IsArray())
-            return sol::make_object(lua, ArrayType(&var.GetArray<float>(), var.IsReadOnly()));
+            return sol::make_object(lua, ArrayType(read_only, &var.GetArray<float>()));
         return sol::make_object(lua, var.GetValue<float>());
     }
     else if (type == ScriptVar::Type::String)
     {
-        using ArrayType = ArrayInterface<std::string>;
+        using ArrayType = ArrayInterface<std::string, ArrayDataPointer>;
         if (var.IsArray())
-            return sol::make_object(lua,  ArrayType(&var.GetArray<std::string>(), var.IsReadOnly()));
+            return sol::make_object(lua,  ArrayType(read_only, &var.GetArray<std::string>()));
         return sol::make_object(lua, var.GetValue<std::string>());
     }
     else if (type == ScriptVar::Type::Integer)
     {
-        using ArrayType = ArrayInterface<int>;
+        using ArrayType = ArrayInterface<int, ArrayDataPointer>;
         if (var.IsArray())
-            return sol::make_object(lua, ArrayType(&var.GetArray<int>(), var.IsReadOnly()));
+            return sol::make_object(lua, ArrayType(read_only, &var.GetArray<int>()));
         return sol::make_object(lua, var.GetValue<int>());
     }
     else if (type == ScriptVar::Type::Vec2)
     {
-        using ArrayType = ArrayInterface<glm::vec2>;
+        using ArrayType = ArrayInterface<glm::vec2, ArrayDataPointer>;
         if (var.IsArray())
-            return sol::make_object(lua, ArrayType(&var.GetArray<glm::vec2>(), var.IsReadOnly()));
+            return sol::make_object(lua, ArrayType(read_only, &var.GetArray<glm::vec2>()));
         return sol::make_object(lua, var.GetValue<glm::vec2>());
+    } else BUG("Unhandled ScriptVar type.");
+}
+
+template<typename T>
+sol::object ResolveEntityReferences(const T& whatever, const ScriptVar& var, sol::state_view& state)
+{
+    // this is a generic resolver for cases when a reference cannot
+    // be resolved. for example if entity contains entity references
+    // we can't resolve those. only scene can resolve entity references.
+    // this generic resolver will simply just return the string IDs.
+    if (var.IsArray())
+    {
+        using ArrayType = ArrayInterface<std::string, ArrayDataObject>;
+
+        const auto& refs = var.GetArray<ScriptVar::EntityReference>();
+
+        std::vector<std::string> strs;
+        for (const auto& ref : refs)
+            strs.push_back(ref.id);
+
+        return sol::make_object(state, ArrayType(true, std::move(strs)));
     }
-    else BUG("Unhandled ScriptVar type.");
+
+    const auto& ref = var.GetValue<ScriptVar::EntityReference>();
+
+    return sol::make_object(state, ref.id);
+}
+
+sol::object ResolveEntityReferences(game::Scene& scene, const ScriptVar& var, sol::state_view& state)
+{
+    // the reference to the entity is placed during design time
+    // and the scene placement node has an ID which becomes the
+    // entity instance ID when the scene is instantiated.
+    if (var.IsArray())
+    {
+        using ArrayType = ArrayInterface<Entity*, ArrayObjectReference>;
+
+        return sol::make_object(state, ArrayType(var.IsReadOnly(), &var, &scene));
+    }
+    const auto& ref = var.GetValue<ScriptVar::EntityReference>();
+
+    return sol::make_object(state, scene.FindEntityByInstanceId(ref.id));
+}
+
+template<typename T>
+sol::object ResolveNodeReferences(const T& whatever, const ScriptVar& var, sol::state_view& state)
+{
+    // this is a generic resolver for cases when a reference cannot be resolved.
+    // for example if a scene contains entity node references we can't resolve those,
+    // but only entity can resolve entity node references.
+    // this generic resolver will simply just return the string IDs
+    if (var.IsArray())
+    {
+        using ArrayType = ArrayInterface<std::string, ArrayDataObject>;
+
+        const auto& refs = var.GetArray<ScriptVar::EntityNodeReference>();
+
+        std::vector<std::string> strs;
+        for (const auto& ref : refs)
+            strs.push_back(ref.id);
+
+        return sol::make_object(state, ArrayType(true, std::move(strs)));
+    }
+    const auto& ref = var.GetValue<ScriptVar::EntityNodeReference>();
+
+    return sol::make_object(state, ref.id);
+
+}
+
+sol::object ResolveNodeReferences(game::Entity& entity, const ScriptVar& var, sol::state_view& state)
+{
+    // The entity node instance IDs are dynamic. since the
+    // reference is placed during design time it's based on the class IDs
+    if (var.IsArray())
+    {
+        using ArrayType = ArrayInterface<EntityNode*, ArrayObjectReference>;
+
+        return sol::make_object(state, ArrayType(var.IsReadOnly(), &var, &entity));
+    }
+
+    const auto& ref = var.GetValue<ScriptVar::EntityNodeReference>();
+
+    return sol::make_object(state, entity.FindNodeByClassId(ref.id));
 }
 
 template<typename Type>
-sol::object GetScriptVar(const Type& object, const char* key, sol::this_state state)
+sol::object GetScriptVar(Type& object, const char* key, sol::this_state state)
 {
     using namespace engine;
     sol::state_view lua(state);
     const ScriptVar* var = object.FindScriptVarByName(key);
     if (!var)
         throw GameError(base::FormatString("No such variable: '%1'", key));
-    return ObjectFromScriptVarValue(*var, state);
+
+    if (var->GetType() == game::ScriptVar::Type::EntityReference)
+    {
+        return ResolveEntityReferences(object, *var, lua);
+    }
+    else if (var->GetType() == game::ScriptVar::Type::EntityNodeReference)
+    {
+        return ResolveNodeReferences(object, *var, lua);
+    }
+    else return ObjectFromScriptVarValue(*var, state);
 }
 template<typename Type>
 void SetScriptVar(Type& object, const char* key, sol::object value)
@@ -579,6 +656,16 @@ void SetScriptVar(Type& object, const char* key, sol::object value)
         var->SetValue(value.as<std::string>());
     else if (value.is<glm::vec2>() && var->HasType<glm::vec2>())
         var->SetValue(value.as<glm::vec2>());
+    else if (value.is<game::EntityNode*>() && var->HasType<game::ScriptVar::EntityNodeReference>())
+        var->SetValue(game::ScriptVar::EntityNodeReference{value.as<game::EntityNode*>()->GetClassId()});
+    else if (value.is<game::Entity*>() && var->HasType<game::ScriptVar::EntityReference>())
+        var->SetValue(game::ScriptVar::EntityReference{value.as<game::Entity*>()->GetId()});
+    else if (!value.valid()) {
+        if (var->HasType<game::ScriptVar::EntityNodeReference>())
+            var->SetValue(game::ScriptVar::EntityNodeReference{""});
+        else if (var->HasType<game::ScriptVar::EntityReference>())
+            var->SetValue(game::ScriptVar::EntityReference{""});
+    }
     else throw GameError(base::FormatString("Variable type mismatch. '%1' expects: '%2'", key, var->GetType()));
 }
 
@@ -611,8 +698,8 @@ void SetKvValue(engine::KeyValueStore& kv, const char* key, sol::object value)
 
 // WAR. G++ 10.2.0 has internal segmentation fault when using the Get/SetScriptVar helpers
 // directly in the call to create new usertype. adding these specializations as a workaround.
-template sol::object GetScriptVar<game::Scene>(const game::Scene&, const char*, sol::this_state);
-template sol::object GetScriptVar<game::Entity>(const game::Entity&, const char*, sol::this_state);
+template sol::object GetScriptVar<game::Scene>(game::Scene&, const char*, sol::this_state);
+template sol::object GetScriptVar<game::Entity>(game::Entity&, const char*, sol::this_state);
 template void SetScriptVar<game::Scene>(game::Scene&, const char* key, sol::object);
 template void SetScriptVar<game::Entity>(game::Entity&, const char* key, sol::object);
 
@@ -625,14 +712,10 @@ template<typename Actuator> inline
 Actuator* ActuatorCast(game::Actuator* actuator)
 { return dynamic_cast<Actuator*>(actuator); }
 
-sol::object WidgetObjectCast(sol::this_state state, uik::Widget* widget, const std::string& type_string)
+sol::object WidgetObjectCast(sol::this_state state, uik::Widget* widget)
 {
     sol::state_view lua(state);
-    const auto type_value = magic_enum::enum_cast<uik::Widget::Type>(type_string);
-    if (!type_value.has_value())
-        throw GameError("No such widget type: " + type_string);
-
-    const auto type = type_value.value();
+    const auto type = widget->GetType();
     if (type == uik::Widget::Type::Form)
         return sol::make_object(lua, uik::WidgetCast<uik::Form>(widget));
     else if (type == uik::Widget::Type::Label)
@@ -656,19 +739,27 @@ sol::object WidgetObjectCast(sol::this_state state, uik::Widget* widget, const s
 template<typename Widget>
 void BindWidgetInterface(sol::usertype<Widget>& widget)
 {
-    widget["GetId"]          = &Widget::GetId;
-    widget["GetName"]        = &Widget::GetName;
-    widget["GetHash"]        = &Widget::GetHash;
-    widget["GetSize"]        = &Widget::GetSize;
-    widget["GetPosition"]    = &Widget::GetPosition;
-    widget["GetType"]        = [](const Widget* widget) { return base::ToString(widget->GetType()); };
-    widget["SetName"]        = &Widget::SetName;
-    widget["TestFlag"]       = &TestFlag<Widget>;
-    widget["SetFlag"]        = &SetFlag<Widget>;
-    widget["IsEnabled"]      = &Widget::IsEnabled;
-    widget["IsVisible"]      = &Widget::IsVisible;
-    widget["Grow"]           = &Widget::Grow;
-    widget["Translate"]      = &Widget::Translate;
+    widget["GetId"]               = &Widget::GetId;
+    widget["GetName"]             = &Widget::GetName;
+    widget["GetHash"]             = &Widget::GetHash;
+    widget["GetSize"]             = &Widget::GetSize;
+    widget["GetPosition"]         = &Widget::GetPosition;
+    widget["GetType"]             = [](const Widget* widget) { return base::ToString(widget->GetType()); };
+    widget["SetName"]             = &Widget::SetName;
+    widget["TestFlag"]            = &TestFlag<Widget>;
+    widget["SetFlag"]             = &SetFlag<Widget>;
+    widget["IsEnabled"]           = &Widget::IsEnabled;
+    widget["IsVisible"]           = &Widget::IsVisible;
+    widget["Grow"]                = &Widget::Grow;
+    widget["Translate"]           = &Widget::Translate;
+    widget["SetStyleProperty"]    = &Widget::SetStyleProperty;
+    widget["DeleteStyleProperty"] = &Widget::DeleteStyleProperty;
+    widget["GetStyleProperty"]    = [](Widget& widget, const std::string& key, sol::this_state state) {
+        sol::state_view lua(state);
+        if (const auto* prop = widget.GetStyleProperty(key))
+            return sol::make_object(lua, *prop);
+        return sol::make_object(lua, sol::nil);
+    };
     widget["SetVisible"]     = [](Widget& widget, bool on_off) {
         widget.SetFlag(Widget::Flags::VisibleInGame, on_off);
     };
@@ -836,11 +927,17 @@ public:
     { mBegin = mResult.begin(); }
     ResultSet()
     { mBegin = mResult.begin(); }
-    T GetCurrent() const
+    const T& GetCurrent() const
     {
         if (mBegin == mResult.end())
             throw GameError("ResultSet iteration error.");
         return *mBegin;
+    }
+    const T& GetNext()
+    {
+        if (mBegin == mResult.end())
+            throw GameError("ResultSet iteration error.");
+        return *mBegin++;
     }
     void BeginIteration()
     { mBegin = mResult.begin(); }
@@ -882,8 +979,14 @@ public:
     const T& GetCurrent() const
     {
         if (mBegin == mResult.end())
-            throw GameError("ResultSet iteration error.");
+            throw GameError("ResultVector iteration error.");
         return *mBegin;
+    }
+    const T& GetNext()
+    {
+        if (mBegin == mResult.end())
+            throw GameError("ResultVector iteration error.");
+        return *mBegin++;
     }
     const T& GetAt(size_t index) const
     {
@@ -903,262 +1006,41 @@ private:
 namespace engine
 {
 
-LuaGame::LuaGame(const std::string& lua_path,
-                 const std::string& game_script,
-                 const std::string& game_home,
-                 const std::string& game_name)
-    : mLuaPath(lua_path)
-    , mGameScript(game_script)
-{
-    mLuaState = std::make_unique<sol::state>();
-    // todo: should this specify which libraries to load?
-    mLuaState->open_libraries();
-
-    mLuaState->clear_package_loaders();
-
-    mLuaState->add_package_loader([this](std::string module) {
-        ASSERT(mLoader);
-        if (!base::EndsWith(module, ".lua"))
-            module += ".lua";
-
-        DEBUG("Loading Lua module. [module=%1]", module);
-        const auto& file = base::JoinPath(mLuaPath, module);
-        const auto& buff = mLoader->LoadGameDataFromFile(file);
-        if (!buff)
-            throw std::runtime_error("can't find lua module: " + module);
-        auto ret = mLuaState->load_buffer((const char*)buff->GetData(), buff->GetSize());
-        if (!ret.valid())
-        {
-            sol::error err = ret;
-            throw std::runtime_error(err.what());
-        }
-        return ret.get<sol::function>(); // hmm??
-    });
-
-    BindBase(*mLuaState);
-    BindUtil(*mLuaState);
-    BindData(*mLuaState);
-    BindGLM(*mLuaState);
-    BindGFX(*mLuaState);
-    BindWDK(*mLuaState);
-    BindUIK(*mLuaState);
-    BindGameLib(*mLuaState);
-
-    // bind engine interface.
-    auto table  = (*mLuaState)["game"].get_or_create<sol::table>();
-    table["home"] = game_home;
-    table["name"] = game_name;
-    table["OS"]   = OS_NAME;
-    auto engine = table.new_usertype<LuaGame>("Engine");
-    BindEngine(engine, *this);
-    engine["SetViewport"] = sol::overload(
-        [](LuaGame& self, const FRect& view) {
-            self.mView = view;
-        },
-        [](LuaGame& self, float x, float y, float width, float height) {
-            self.mView = base::FRect(x, y, width, height);
-        },
-        [](LuaGame& self, float width, float height) {
-            self.mView = base::FRect(0.0f,  0.0f, width, height);
-        });
-    engine["GetTopUI"] = [](LuaGame& self, sol::this_state state) {
-        sol::state_view lua(state);
-        if (self.mWindow == nullptr)
-            return sol::make_object(lua, sol::nil);
-        return sol::make_object(lua, self.mWindow);
-    };
-}
-
-LuaGame::~LuaGame() = default;
-
-void LuaGame::SetStateStore(KeyValueStore* store)
-{
-    mStateStore = store;
-}
-
-void LuaGame::SetPhysicsEngine(const PhysicsEngine* engine)
-{
-    mPhysicsEngine = engine;
-}
-void LuaGame::SetAudioEngine(const AudioEngine* engine)
-{
-    mAudioEngine = engine;
-}
-void LuaGame::SetDataLoader(const Loader* loader)
-{
-    mLoader = loader;
-}
-void LuaGame::SetClassLibrary(const ClassLibrary* classlib)
-{
-    mClasslib = classlib;
-}
-void LuaGame::SetCurrentUI(uik::Window* window)
-{
-    mWindow = window;
-}
-
-bool LuaGame::LoadGame()
-{
-    const auto& main_game_script = base::JoinPath(mLuaPath, mGameScript);
-    DEBUG("Loading main game script. [file='%1']", main_game_script);
-
-    const auto buffer = mLoader->LoadGameDataFromFile(main_game_script);
-    if (!buffer)
-    {
-        ERROR("Failed to load main game script data. [file='%1']", main_game_script);
-        return false;
-    }
-    const auto& view = sol::string_view((const char*)buffer->GetData(), buffer->GetSize());
-    auto result = mLuaState->script(view);
-    if (!result.valid())
-    {
-        const sol::error err = result;
-        ERROR("Lua script error. [file='%1', error='%2']", main_game_script, err.what());
-        // throwing here is just too convenient way to propagate the Lua
-        // specific error message up the stack without cluttering the interface,
-        // and when running the engine inside the editor we really want to
-        // have this lua error propagated all the way to the UI
-        throw std::runtime_error(err.what());
-    }
-
-    (*mLuaState)["Audio"]    = mAudioEngine;
-    (*mLuaState)["Physics"]  = mPhysicsEngine;
-    (*mLuaState)["ClassLib"] = mClasslib;
-    (*mLuaState)["State"]    = mStateStore;
-    (*mLuaState)["Game"]     = this;
-    CallLua((*mLuaState)["LoadGame"]);
-    // tood: return value.
-    return true;
-}
-
-void LuaGame::StartGame()
-{
-    CallLua((*mLuaState)["StartGame"]);
-}
-
-void LuaGame::Tick(double game_time, double dt)
-{
-    CallLua((*mLuaState)["Tick"], game_time, dt);
-}
-void LuaGame::Update(double game_time, double dt)
-{
-    CallLua((*mLuaState)["Update"], game_time, dt);
-}
-void LuaGame::BeginPlay(Scene* scene)
-{
-    mScene = scene;
-    (*mLuaState)["Scene"] = mScene;
-
-    CallLua((*mLuaState)["BeginPlay"], scene);
-}
-void LuaGame::EndPlay(Scene* scene)
-{
-    CallLua((*mLuaState)["EndPlay"], scene);
-    (*mLuaState)["Scene"] = nullptr;
-    mScene = nullptr;
-}
-
-void LuaGame::StopGame()
-{
-    CallLua((*mLuaState)["StopGame"]);
-}
-
-void LuaGame::SaveGame()
-{
-    CallLua((*mLuaState)["SaveGame"]);
-}
-
-bool LuaGame::GetNextAction(Action* out)
-{
-    if (mActionQueue.empty())
-        return false;
-    *out = std::move(mActionQueue.front());
-    mActionQueue.pop();
-    return true;
-}
-
-FRect LuaGame::GetViewport() const
-{ return mView; }
-
-void LuaGame::OnUIOpen(uik::Window* ui)
-{
-    CallLua((*mLuaState)["OnUIOpen"], ui);
-}
-void LuaGame::OnUIClose(uik::Window* ui, int result)
-{
-    CallLua((*mLuaState)["OnUIClose"], ui, result);
-}
-
-void LuaGame::OnUIAction(uik::Window* ui, const uik::Window::WidgetAction& action)
-{
-    CallLua((*mLuaState)["OnUIAction"], ui, action);
-}
-
-void LuaGame::OnContactEvent(const ContactEvent& contact)
-{
-    auto* nodeA = contact.nodeA;
-    auto* nodeB = contact.nodeB;
-    auto* entityA = nodeA->GetEntity();
-    auto* entityB = nodeB->GetEntity();
-
-    if (contact.type == ContactEvent::Type::BeginContact)
-    {
-        CallLua((*mLuaState)["OnBeginContact"], entityA, entityB, nodeA, nodeB);
-    }
-    else if (contact.type == ContactEvent::Type::EndContact)
-    {
-        CallLua((*mLuaState)["OnEndContact"], entityA, entityB, nodeA, nodeB);
-    }
-}
-
-void LuaGame::OnAudioEvent(const AudioEvent& event)
-{
-    CallLua((*mLuaState)["OnAudioEvent"], event);
-}
-
-void LuaGame::OnGameEvent(const GameEvent& event)
-{
-    CallLua((*mLuaState)["OnGameEvent"], event);
-}
-
-void LuaGame::OnSceneEvent(const game::Scene::Event& event)
-{
-    // todo: if needed
-}
-
-void LuaGame::OnKeyDown(const wdk::WindowEventKeyDown& key)
-{
-    CallLua((*mLuaState)["OnKeyDown"],
-            static_cast<int>(key.symbol),
-            static_cast<int>(key.modifiers.value()));
-}
-void LuaGame::OnKeyUp(const wdk::WindowEventKeyUp& key)
-{
-    CallLua((*mLuaState)["OnKeyUp"],
-            static_cast<int>(key.symbol),
-            static_cast<int>(key.modifiers.value()));
-}
-void LuaGame::OnChar(const wdk::WindowEventChar& text)
-{
-
-}
-void LuaGame::OnMouseMove(const MouseEvent& mouse)
-{
-    CallLua((*mLuaState)["OnMouseMove"], mouse);
-}
-void LuaGame::OnMousePress(const MouseEvent& mouse)
-{
-    CallLua((*mLuaState)["OnMousePress"], mouse);
-}
-void LuaGame::OnMouseRelease(const MouseEvent& mouse)
-{
-    CallLua((*mLuaState)["OnMouseRelease"], mouse);
-}
-
-ScriptEngine::ScriptEngine(const std::string& lua_path) : mLuaPath(lua_path)
+LuaRuntime::LuaRuntime(const std::string& lua_path,
+                       const std::string& game_script,
+                       const std::string& game_home,
+                       const std::string& game_name)
+  : mLuaPath(lua_path)
+  , mGameScript(game_script)
+  , mGameHome(game_home)
+  , mGameName(game_name)
 {}
 
-void ScriptEngine::Init()
+LuaRuntime::~LuaRuntime()
+{
+    // careful here, make sure to clean up the environment objects
+    // first since they depend on lua state.
+    mEntityEnvs.clear();
+    mWindowEnvs.clear();
+    mSceneEnv.reset();
+    mGameEnv.reset();
+    mLuaState.reset();
+}
+
+void LuaRuntime::SetClassLibrary(const ClassLibrary* classlib)
+{ mClassLib = classlib; }
+void LuaRuntime::SetPhysicsEngine(const PhysicsEngine* engine)
+{ mPhysicsEngine = engine; }
+void LuaRuntime::SetAudioEngine(const AudioEngine* engine)
+{ mAudioEngine = engine; }
+void LuaRuntime::SetDataLoader(const Loader* loader)
+{ mDataLoader = loader; }
+void LuaRuntime::SetStateStore(KeyValueStore* store)
+{ mStateStore = store; }
+void LuaRuntime::SetCurrentUI(uik::Window* window)
+{ mWindow = window; }
+
+void LuaRuntime::Init()
 {
     mLuaState = std::make_unique<sol::state>();
     mLuaState->open_libraries();
@@ -1203,23 +1085,259 @@ void ScriptEngine::Init()
     };
 
     auto table = (*mLuaState)["game"].get_or_create<sol::table>();
-    table["OS"] = OS_NAME;
-    auto engine = table.new_usertype<ScriptEngine>("Engine");
-    BindEngine(engine, *this);
+    table["OS"]   = OS_NAME;
+    table["home"] = mGameHome;
+    table["name"] = mGameName;
+
+    auto engine = table.new_usertype<LuaRuntime>("Engine");
+
+    engine["SpawnEntity"] = sol::overload(
+            [](const LuaRuntime& self, const std::string& klass, const sol::table& args_table) {
+                if (!self.mScene)
+                    throw GameError("No scene is currently being played.");
+                game::EntityArgs args;
+                args.klass = self.mClassLib->FindEntityClassByName(klass);
+                if (!args.klass)
+                    throw GameError("No such entity class could be found: " + klass);
+                args.id   = args_table.get_or("id", std::string(""));
+                args.name = args_table.get_or("name", std::string(""));
+                args.scale.x = args_table.get_or("sx", 1.0f);
+                args.scale.y = args_table.get_or("sy", 1.0f);
+                args.position.x = args_table.get_or("x", 0.0f);
+                args.position.y = args_table.get_or("y", 0.0f);
+                args.rotation = args_table.get_or("r", 0.0f);
+                args.enable_logging = args_table.get_or("logging", false);
+                const glm::vec2* pos = nullptr;
+                const glm::vec2* scale = nullptr;
+                if (const auto* ptr = args_table.get_or("pos", pos))
+                    args.position = *ptr;
+                if (const auto* ptr = args_table.get_or("scale", scale))
+                    args.scale = *ptr;
+
+                return self.mScene->SpawnEntity(args);
+            },
+            [](const LuaRuntime& self, const std::string& klass) {
+                if (!self.mScene)
+                    throw GameError("No scene is currently being played.");
+                game::EntityArgs args;
+                args.klass = self.mClassLib->FindEntityClassByName(klass);
+                if (!args.klass)
+                    throw GameError("No such entity class could be found: " + klass);
+                return self.mScene->SpawnEntity(args);
+            }
+    );
+    engine["Play"] = sol::overload(
+        [](LuaRuntime& self, ClassHandle<SceneClass> klass) {
+            if (!klass)
+                throw GameError("Nil scene class");
+            PlayAction play;
+            play.scene = game::CreateSceneInstance(klass);
+            auto* ret = play.scene.get();
+            self.mActionQueue.push(std::move(play));
+            return ret;
+        },
+        [](LuaRuntime& self, std::string name) {
+            auto klass = self.mClassLib->FindSceneClassByName(name);
+            if (!klass)
+                throw GameError("No such scene class: " + name);
+            PlayAction play;
+            play.scene = game::CreateSceneInstance(klass);
+            auto* ret = play.scene.get();
+            self.mActionQueue.push(std::move(play));
+            return ret;
+        });
+    engine["Suspend"] = [](LuaRuntime& self) {
+        SuspendAction suspend;
+        self.mActionQueue.push(suspend);
+    };
+    engine["EndPlay"] = [](LuaRuntime& self) {
+        EndPlayAction end;
+        self.mActionQueue.push(end);
+    };
+    engine["Resume"] = [](LuaRuntime& self) {
+        ResumeAction resume;
+        self.mActionQueue.push(resume);
+    };
+    engine["Quit"] = [](LuaRuntime& self, int exit_code) {
+        QuitAction quit;
+        quit.exit_code = exit_code;
+        self.mActionQueue.push(quit);
+    };
+    engine["Delay"] = [](LuaRuntime& self, float value) {
+        DelayAction delay;
+        delay.seconds = value;
+        self.mActionQueue.push(delay);
+    };
+    engine["GrabMouse"] = [](LuaRuntime& self, bool grab) {
+        GrabMouseAction mickey;
+        mickey.grab = grab;
+        self.mActionQueue.push(mickey);
+    };
+    engine["ShowMouse"] = [](LuaRuntime& self, bool show) {
+        ShowMouseAction mickey;
+        mickey.show = show;
+        self.mActionQueue.push(mickey);
+    };
+    engine["ShowDebug"] = [](LuaRuntime& self, bool show) {
+        ShowDebugAction act;
+        act.show = show;
+        self.mActionQueue.push(act);
+    };
+    engine["SetFullScreen"] = [](LuaRuntime& self, bool full_screen) {
+        RequestFullScreenAction fs;
+        fs.full_screen = full_screen;
+        self.mActionQueue.push(fs);
+    };
+    engine["BlockKeyboard"] = [](LuaRuntime& self, bool yes_no) {
+        BlockKeyboardAction block;
+        block.block = yes_no;
+        self.mActionQueue.push(block);
+    };
+    engine["BlockMouse"] = [](LuaRuntime& self, bool yes_no) {
+        BlockMouseAction block;
+        block.block = yes_no;
+        self.mActionQueue.push(block);
+    };
+    engine["DebugPrint"] = [](LuaRuntime& self, std::string message) {
+        DebugPrintAction action;
+        action.message = std::move(message);
+        self.mActionQueue.push(std::move(action));
+    };
+    engine["DebugDrawLine"] = sol::overload(
+        [](LuaRuntime& self, const glm::vec2&  a, const glm::vec2& b, const base::Color4f& color, float width) {
+            DebugDrawLine draw;
+            draw.a = FPoint(a.x, a.y);
+            draw.b = FPoint(b.x, b.y);
+            draw.color = color;
+            draw.width = width;
+            self.mActionQueue.push(std::move(draw));
+        },
+        [](LuaRuntime& self, const base::FPoint& a, const FPoint& b, const base::Color4f& color, float width) {
+            DebugDrawLine draw;
+            draw.a = a;
+            draw.b = b;
+            draw.color = color;
+            draw.width = width;
+            self.mActionQueue.push(std::move(draw));
+        },
+        [](LuaRuntime& self, float x0, float y0, float x1, float y1, const base::Color4f& color, float width) {
+            DebugDrawLine draw;
+            draw.a = base::FPoint(x0, y0);
+            draw.b = base::FPoint(x1, y1);
+            draw.color = color;
+            draw.width = width;
+            self.mActionQueue.push(std::move(draw));
+        });
+    engine["DebugClear"] = [](LuaRuntime& self) {
+        DebugClearAction action;
+        self.mActionQueue.push(action);
+    };
+    engine["SetViewport"] = sol::overload(
+        [](LuaRuntime& self, const FRect& view) {
+            self.mView = view;
+        },
+        [](LuaRuntime& self, float x, float y, float width, float height) {
+            self.mView = base::FRect(x, y, width, height);
+        },
+        [](LuaRuntime& self, float width, float height) {
+            self.mView = base::FRect(0.0f,  0.0f, width, height);
+        });
+    engine["GetTopUI"] = [](LuaRuntime& self, sol::this_state state) {
+        sol::state_view lua(state);
+        if (self.mWindow == nullptr)
+            return sol::make_object(lua, sol::nil);
+        return sol::make_object(lua, self.mWindow);
+    };
+    engine["OpenUI"] = sol::overload(
+        [](LuaRuntime& self, ClassHandle<uik::Window> model) {
+            if (!model)
+                throw GameError("Nil UI window object.");
+            // there's no "class" object for the UI system so we're just
+            // going to create a mutable copy and put that on the UI stack.
+            OpenUIAction action;
+            action.ui = std::make_shared<uik::Window>(*model);
+            self.mActionQueue.push(action);
+            return action.ui.get();
+        },
+        [](LuaRuntime& self, std::string name) {
+            auto handle = self.mClassLib->FindUIByName(name);
+            if (!handle)
+                throw GameError("No such UI: " + name);
+            OpenUIAction action;
+            action.ui = std::make_shared<uik::Window>(*handle);
+            self.mActionQueue.push(action);
+            return action.ui.get();
+        });
+    engine["CloseUI"] = [](LuaRuntime& self, int result) {
+        CloseUIAction action;
+        action.result = result;
+        self.mActionQueue.push(std::move(action));
+    };
+    engine["PostEvent"] = [](LuaRuntime& self, const GameEvent& event) {
+        PostEventAction action;
+        action.event = event;
+        self.mActionQueue.push(std::move(action));
+    };
+    engine["ShowDeveloperUI"] = [](LuaRuntime& self, bool show) {
+        ShowDeveloperUIAction action;
+        action.show = show;
+        self.mActionQueue.push(action);
+    };
+
+    if (!mGameScript.empty())
+    {
+        mGameEnv = std::make_unique<sol::environment>(*mLuaState, sol::create, mLuaState->globals());
+
+        const auto& main_game_script = base::JoinPath(mLuaPath, mGameScript);
+        DEBUG("Loading main game script. [file='%1']", main_game_script);
+
+        const auto buffer = mDataLoader->LoadGameDataFromFile(main_game_script);
+        if (!buffer)
+        {
+            ERROR("Failed to load main game script data. [file='%1']", main_game_script);
+            throw std::runtime_error("failed to load main game script.");
+        }
+        const auto& view = sol::string_view((const char*) buffer->GetData(), buffer->GetSize());
+        auto result = mLuaState->script(view, *mGameEnv);
+        if (!result.valid())
+        {
+            const sol::error err = result;
+            ERROR("Lua script error. [file='%1', error='%2']", main_game_script, err.what());
+            // throwing here is just too convenient way to propagate the Lua
+            // specific error message up the stack without cluttering the interface,
+            // and when running the engine inside the editor we really want to
+            // have this lua error propagated all the way to the UI
+            throw std::runtime_error(err.what());
+        }
+    }
 }
 
-ScriptEngine::~ScriptEngine()
+bool LuaRuntime::LoadGame()
 {
-    // careful here, make sure to clean up the environment objects
-    // first since they depend on lua state.
-    mEntityEnvs.clear();
-    mWindowEnvs.clear();
-    mSceneEnv.reset();
-
-    mLuaState.reset();
+    if (mGameEnv)
+        CallLua((*mGameEnv)["LoadGame"]);
+    // tood: return value.
+    return true;
 }
 
-void ScriptEngine::BeginPlay(Scene* scene)
+void LuaRuntime::StartGame()
+{
+    if (mGameEnv)
+        CallLua((*mGameEnv)["StartGame"]);
+}
+
+void LuaRuntime::SaveGame()
+{
+    if (mGameEnv)
+        CallLua((*mGameEnv)["SaveGame"]);
+}
+void LuaRuntime::StopGame()
+{
+    if (mGameEnv)
+        CallLua((*mGameEnv)["StopGame"]);
+}
+
+void LuaRuntime::BeginPlay(Scene* scene)
 {
     // table that maps entity types to their scripting
     // environments. then we later invoke the script per
@@ -1311,6 +1429,9 @@ void ScriptEngine::BeginPlay(Scene* scene)
     mScene = scene;
     (*mLuaState)["Scene"] = mScene;
 
+    if (mGameEnv)
+        CallLua((*mGameEnv)["BeginPlay"], scene);
+
     if (mSceneEnv)
         CallLua((*mSceneEnv)["BeginPlay"], scene);
 
@@ -1330,8 +1451,11 @@ void ScriptEngine::BeginPlay(Scene* scene)
     }
 }
 
-void ScriptEngine::EndPlay(Scene* scene)
+void LuaRuntime::EndPlay(Scene* scene)
 {
+    if (mGameEnv)
+        CallLua((*mGameEnv)["EndPlay"], scene);
+
     if (mSceneEnv)
         CallLua((*mSceneEnv)["EndPlay"], scene);
 
@@ -1341,50 +1465,70 @@ void ScriptEngine::EndPlay(Scene* scene)
     (*mLuaState)["Scene"] = nullptr;
 }
 
-void ScriptEngine::Tick(double game_time, double dt)
+void LuaRuntime::Tick(double game_time, double dt)
 {
-    if (mSceneEnv)
+    if (mGameEnv)
     {
-        TRACE_CALL("Lua::Scene::Tick",
-                   CallLua((*mSceneEnv)["Tick"], mScene, game_time, dt));
+        TRACE_CALL("Lua::Game::Tick",
+                   CallLua((*mGameEnv)["Tick"], game_time, dt));
     }
 
-    TRACE_SCOPE("Lua::Entity::Tick");
-    for (size_t i=0; i<mScene->GetNumEntities(); ++i)
+    if (mScene)
     {
-        auto* entity = &mScene->GetEntity(i);
-        if (!entity->TestFlag(Entity::Flags::TickEntity))
-            continue;
-        if (auto* env = GetTypeEnv(entity->GetClass()))
+        if (mSceneEnv)
         {
-            CallLua((*env)["Tick"], entity, game_time, dt);
+            TRACE_CALL("Lua::Scene::Tick",
+                       CallLua((*mSceneEnv)["Tick"], mScene, game_time, dt));
         }
-    }
-}
-void ScriptEngine::Update(double game_time, double dt)
-{
-    if (mSceneEnv)
-    {
-        TRACE_CALL("Lua::Scene::Update",
-                   CallLua((*mSceneEnv)["Update"], mScene, game_time, dt));
-    }
 
-    TRACE_SCOPE("Lua::Entity::Update");
-    for (size_t i=0; i<mScene->GetNumEntities(); ++i)
-    {
-        auto* entity = &mScene->GetEntity(i);
-        if (auto* env = GetTypeEnv(entity->GetClass()))
+        TRACE_SCOPE("Lua::Entity::Tick");
+        for (size_t i = 0; i < mScene->GetNumEntities(); ++i)
         {
-            if (const auto* anim = entity->GetFinishedAnimation()) {
-                CallLua((*env)["OnAnimationFinished"], entity, anim);
-            }
-            if (entity->TestFlag(Entity::Flags::UpdateEntity)) {
-                CallLua((*env)["Update"], entity, game_time, dt);
+            auto* entity = &mScene->GetEntity(i);
+            if (!entity->TestFlag(Entity::Flags::TickEntity))
+                continue;
+            if (auto* env = GetTypeEnv(entity->GetClass()))
+            {
+                CallLua((*env)["Tick"], entity, game_time, dt);
             }
         }
     }
 }
-void ScriptEngine::PostUpdate(double game_time)
+void LuaRuntime::Update(double game_time, double dt)
+{
+    if (mGameEnv)
+    {
+        TRACE_CALL("Lua::Game::Update",
+                   CallLua((*mGameEnv)["Update"], game_time, dt));
+    }
+
+    if (mScene)
+    {
+        if (mSceneEnv)
+        {
+            TRACE_CALL("Lua::Scene::Update",
+                       CallLua((*mSceneEnv)["Update"], mScene, game_time, dt));
+        }
+
+        TRACE_SCOPE("Lua::Entity::Update");
+        for (size_t i = 0; i < mScene->GetNumEntities(); ++i)
+        {
+            auto* entity = &mScene->GetEntity(i);
+            if (auto* env = GetTypeEnv(entity->GetClass()))
+            {
+                if (const auto* anim = entity->GetFinishedAnimation())
+                {
+                    CallLua((*env)["OnAnimationFinished"], entity, anim);
+                }
+                if (entity->TestFlag(Entity::Flags::UpdateEntity))
+                {
+                    CallLua((*env)["Update"], entity, game_time, dt);
+                }
+            }
+        }
+    }
+}
+void LuaRuntime::PostUpdate(double game_time)
 {
     TRACE_SCOPE("Lua::Entity::PostUpdate");
     for (size_t i=0; i<mScene->GetNumEntities(); ++i)
@@ -1399,7 +1543,7 @@ void ScriptEngine::PostUpdate(double game_time)
     }
 }
 
-void ScriptEngine::BeginLoop()
+void LuaRuntime::BeginLoop()
 {
     // entities spawned in the scene during calls to update/tick
     // have the spawned flag on. Invoke the BeginPlay callbacks
@@ -1419,7 +1563,7 @@ void ScriptEngine::BeginLoop()
     }
 }
 
-void ScriptEngine::EndLoop()
+void LuaRuntime::EndLoop()
 {
      // entities killed in the scene during calls to update/tick
      // have the kill flag on. Invoke the EndPlay callbacks for
@@ -1439,7 +1583,7 @@ void ScriptEngine::EndLoop()
      }
 }
 
-bool ScriptEngine::GetNextAction(Action* out)
+bool LuaRuntime::GetNextAction(Action* out)
 {
     if (mActionQueue.empty())
         return false;
@@ -1448,10 +1592,11 @@ bool ScriptEngine::GetNextAction(Action* out)
     return true;
 }
 
-void ScriptEngine::OnContactEvent(const ContactEvent& contact)
+void LuaRuntime::OnContactEvent(const ContactEvent& contact)
 {
     const auto* function = contact.type == ContactEvent::Type::BeginContact
-            ? "OnBeginContact" : "OnEndContact";
+            ? "OnBeginContact"
+            : "OnEndContact";
 
     auto* nodeA = contact.nodeA;
     auto* nodeB = contact.nodeB;
@@ -1460,6 +1605,9 @@ void ScriptEngine::OnContactEvent(const ContactEvent& contact)
 
     const auto& klassA = entityA->GetClass();
     const auto& klassB = entityB->GetClass();
+
+    if (mGameEnv)
+        CallLua((*mGameEnv)[function], entityA, entityB, nodeA, nodeB);
 
     if (mSceneEnv)
         CallLua((*mSceneEnv)[function](mScene, entityA, nodeA, entityB, nodeB));
@@ -1473,22 +1621,34 @@ void ScriptEngine::OnContactEvent(const ContactEvent& contact)
         CallLua((*env)[function], entityB, nodeB, entityA, nodeA);
     }
 }
-void ScriptEngine::OnGameEvent(const GameEvent& event)
+void LuaRuntime::OnGameEvent(const GameEvent& event)
 {
-    if (mSceneEnv)
-        CallLua((*mSceneEnv)["OnGameEvent"], mScene, event);
+    if (mGameEnv)
+        CallLua((*mGameEnv)["OnGameEvent"], event);
 
-    for (size_t i=0; i<mScene->GetNumEntities(); ++i)
+    if (mScene)
     {
-        auto* entity = &mScene->GetEntity(i);
-        if (auto* env = GetTypeEnv(entity->GetClass()))
+        if (mSceneEnv)
+            CallLua((*mSceneEnv)["OnGameEvent"], mScene, event);
+
+        for (size_t i = 0; i < mScene->GetNumEntities(); ++i)
         {
-            CallLua((*env)["OnGameEvent"], entity, event);
+            auto* entity = &mScene->GetEntity(i);
+            if (auto* env = GetTypeEnv(entity->GetClass()))
+            {
+                CallLua((*env)["OnGameEvent"], entity, event);
+            }
         }
     }
 }
 
-void ScriptEngine::OnSceneEvent(const game::Scene::Event& event)
+void LuaRuntime::OnAudioEvent(const AudioEvent& event)
+{
+    if (mGameEnv)
+        CallLua((*mGameEnv)["OnAudioEvent"], event);
+}
+
+void LuaRuntime::OnSceneEvent(const game::Scene::Event& event)
 {
     if (const auto* ptr = std::get_if<game::Scene::EntityTimerEvent>(&event))
     {
@@ -1514,47 +1674,56 @@ void ScriptEngine::OnSceneEvent(const game::Scene::Event& event)
     }
 }
 
-void ScriptEngine::OnKeyDown(const wdk::WindowEventKeyDown& key)
+void LuaRuntime::OnKeyDown(const wdk::WindowEventKeyDown& key)
 {
     DispatchKeyboardEvent("OnKeyDown", key);
 }
-void ScriptEngine::OnKeyUp(const wdk::WindowEventKeyUp& key)
+void LuaRuntime::OnKeyUp(const wdk::WindowEventKeyUp& key)
 {
     DispatchKeyboardEvent("OnKeyUp", key);
 }
-void ScriptEngine::OnChar(const wdk::WindowEventChar& text)
+void LuaRuntime::OnChar(const wdk::WindowEventChar& text)
 {
 
 }
-void ScriptEngine::OnMouseMove(const MouseEvent& mouse)
+void LuaRuntime::OnMouseMove(const MouseEvent& mouse)
 {
     DispatchMouseEvent("OnMouseMove", mouse);
 }
-void ScriptEngine::OnMousePress(const MouseEvent& mouse)
+void LuaRuntime::OnMousePress(const MouseEvent& mouse)
 {
     DispatchMouseEvent("OnMousePress", mouse);
 }
-void ScriptEngine::OnMouseRelease(const MouseEvent& mouse)
+void LuaRuntime::OnMouseRelease(const MouseEvent& mouse)
 {
     DispatchMouseEvent("OnMouseRelease", mouse);
 }
 
-void ScriptEngine::OnUIOpen(uik::Window* ui)
+void LuaRuntime::OnUIOpen(uik::Window* ui)
 {
+    if (mGameEnv)
+        CallLua((*mGameEnv)["OnUIOpen"], ui);
+
     if (auto* env = GetTypeEnv(*ui))
     {
         CallLua((*env)["OnUIOpen"], ui);
     }
 }
-void ScriptEngine::OnUIClose(uik::Window* ui, int result)
+void LuaRuntime::OnUIClose(uik::Window* ui, int result)
 {
+    if (mGameEnv)
+        CallLua((*mGameEnv)["OnUIClose"], ui, result);
+
     if (auto* env = GetTypeEnv(*ui))
     {
         CallLua((*env)["OnUIClose"], ui, result);
     }
 }
-void ScriptEngine::OnUIAction(uik::Window* ui, const uik::Window::WidgetAction& action)
+void LuaRuntime::OnUIAction(uik::Window* ui, const uik::Window::WidgetAction& action)
 {
+    if (mGameEnv)
+        CallLua((*mGameEnv)["OnUIAction"], ui, action);
+
     if (auto* env = GetTypeEnv(*ui))
     {
         CallLua((*env)["OnUIAction"], ui, action);
@@ -1562,8 +1731,13 @@ void ScriptEngine::OnUIAction(uik::Window* ui, const uik::Window::WidgetAction& 
 }
 
 template<typename KeyEvent>
-void ScriptEngine::DispatchKeyboardEvent(const std::string& method, const KeyEvent& key)
+void LuaRuntime::DispatchKeyboardEvent(const std::string& method, const KeyEvent& key)
 {
+    if (mGameEnv)
+        CallLua((*mGameEnv)[method],
+                static_cast<int>(key.symbol),
+                static_cast<int>(key.modifiers.value()));
+
     if (mWindow && mWindow->TestFlag(uik::Window::Flags::WantsKeyEvents))
     {
         if (auto* env = GetTypeEnv(*mWindow))
@@ -1596,8 +1770,11 @@ void ScriptEngine::DispatchKeyboardEvent(const std::string& method, const KeyEve
     }
 }
 
-void ScriptEngine::DispatchMouseEvent(const std::string& method, const MouseEvent& mouse)
+void LuaRuntime::DispatchMouseEvent(const std::string& method, const MouseEvent& mouse)
 {
+    if (mGameEnv)
+        CallLua((*mGameEnv)[method], mouse);
+
     if (mWindow && mWindow->TestFlag(uik::Window::Flags::WantsMouseEvents))
     {
         if (auto* env = GetTypeEnv(*mWindow))
@@ -1624,7 +1801,7 @@ void ScriptEngine::DispatchMouseEvent(const std::string& method, const MouseEven
     }
 }
 
-sol::object ScriptEngine::CallCrossEnvMethod(sol::object object, const std::string& method, sol::variadic_args args)
+sol::object LuaRuntime::CallCrossEnvMethod(sol::object object, const std::string& method, sol::variadic_args args)
 {
     sol::environment* env = nullptr;
     if (object.is<game::Scene*>())
@@ -1636,7 +1813,12 @@ sol::object ScriptEngine::CallCrossEnvMethod(sol::object object, const std::stri
         auto* entity = object.as<game::Entity*>();
         env = GetTypeEnv(entity->GetClass());
     }
-    else throw GameError("Unsupported object type in Lua method call. Only entity or scene object is supported.");
+    else if (object.is<uik::Window*>())
+    {
+        auto* window = object.as<uik::Window*>();
+        env = GetTypeEnv(*window);
+    }
+    else throw GameError("Unsupported object type in Lua method call. Only entity, scene or window object is supported.");
 
     if (env == nullptr)
         throw GameError("Method call target object doesn't have a Lua environment.");
@@ -1660,7 +1842,7 @@ sol::object ScriptEngine::CallCrossEnvMethod(sol::object object, const std::stri
     return sol::make_object(*mLuaState, sol::nil);
 }
 
-sol::environment* ScriptEngine::GetTypeEnv(const EntityClass& klass)
+sol::environment* LuaRuntime::GetTypeEnv(const EntityClass& klass)
 {
     if (!klass.HasScriptFile())
         return nullptr;
@@ -1696,7 +1878,7 @@ sol::environment* ScriptEngine::GetTypeEnv(const EntityClass& klass)
     return it->second.get();
 }
 
-sol::environment* ScriptEngine::GetTypeEnv(const uik::Window& window)
+sol::environment* LuaRuntime::GetTypeEnv(const uik::Window& window)
 {
     if (!window.HasScriptFile())
         return nullptr;
@@ -1817,11 +1999,16 @@ void BindUtil(sol::state& L)
         return str;
     };
 
-    BindArrayInterface<int>(util, "IntArrayInterface");
-    BindArrayInterface<float>(util, "FloatArrayInterface");
-    BindArrayInterface<bool>(util, "BoolArrayInterface");
-    BindArrayInterface<std::string>(util, "StringArrayInterface");
-    BindArrayInterface<glm::vec2>(util, "Vec2ArrayInterface");
+    BindArrayInterface<int,         ArrayDataPointer>(util, "IntArrayInterface");
+    BindArrayInterface<float,       ArrayDataPointer>(util, "FloatArrayInterface");
+    BindArrayInterface<bool,        ArrayDataPointer>(util, "BoolArrayInterface");
+    BindArrayInterface<std::string, ArrayDataPointer>(util, "StringArrayInterface");
+    BindArrayInterface<glm::vec2,   ArrayDataPointer>(util, "Vec2ArrayInterface");
+
+    BindArrayInterface<std::string, ArrayDataObject>(util, "StringArray");
+
+    BindArrayInterface<Entity*,     ArrayObjectReference>(util, "EntityRefArray");
+    BindArrayInterface<EntityNode*, ArrayObjectReference>(util, "EntityNodeRefArray");
 
     util["Join"] = [](const ArrayInterface<std::string>& array, const std::string& separator) {
         std::string ret;
@@ -2246,7 +2433,6 @@ void BindWDK(sol::state& L)
 void BindUIK(sol::state& L)
 {
     auto table = L["uik"].get_or_create<sol::table>();
-    table["WidgetCast"] = &WidgetObjectCast;
 
     auto widget = table.new_usertype<uik::Widget>("Widget");
     BindWidgetInterface(widget);
@@ -2320,37 +2506,38 @@ void BindUIK(sol::state& L)
     radio["GetText"]    = &uik::RadioButton::GetText;
     radio["SetText"]    = &uik::RadioButton::SetText;
 
-    auto window = table.new_usertype<uik::Window>("Window");
+    auto window = table.new_usertype<uik::Window>("Window",
+        sol::meta_function::index, [](sol::this_state state, uik::Window* window, const char* key) {
+                sol::state_view lua(state);
+                auto* widget = window->FindWidgetByName(key);
+                if (!widget)
+                    return sol::make_object(lua, sol::nil);
+                return WidgetObjectCast(state, widget);
+            });
     window["GetId"]            = &uik::Window::GetId;
     window["GetName"]          = &uik::Window::GetName;
     window["GetNumWidgets"]    = &uik::Window::GetNumWidgets;
-    window["FindWidgetById"]   = sol::overload(
-        [](uik::Window* window, const std::string& id) {
-            return window->FindWidgetById(id);
-        },
-        [](sol::this_state state, uik::Window* window, const std::string& id,  const std::string& type_string) {
-            sol::state_view lua(state);
-            auto* widget = window->FindWidgetById(id);
-            if (!widget)
-                return sol::make_object(lua, sol::nil);
-            return WidgetObjectCast(state, widget, type_string);
-        });
-    window["FindWidgetByName"] = sol::overload(
-        [](uik::Window* window, const std::string& name) {
-            return window->FindWidgetByName(name);
-        },
-        [](sol::this_state state, uik::Window* window, const std::string& name, const std::string& type_string) {
-            sol::state_view lua(state);
-            auto* widget = window->FindWidgetByName(name);
-            if (!widget)
-                return sol::make_object(lua, sol::nil);
-            return WidgetObjectCast(state, widget, type_string);
-        });
-    window["FindWidgetParent"] = [](uik::Window* window, uik::Widget* child) { return window->FindParent(child); };
-    window["GetWidget"]        = [](uik::Window* window, unsigned index) {
+    window["FindWidgetById"]   = [](sol::this_state state, uik::Window* window, const std::string& id) {
+        sol::state_view lua(state);
+        auto* widget = window->FindWidgetById(id);
+        if (!widget)
+            return sol::make_object(lua, sol::nil);
+        return WidgetObjectCast(state, widget);
+    };
+    window["FindWidgetByName"] =  [](sol::this_state state, uik::Window* window, const std::string& name) {
+        sol::state_view lua(state);
+        auto* widget = window->FindWidgetByName(name);
+        if (!widget)
+            return sol::make_object(lua, sol::nil);
+        return WidgetObjectCast(state, widget);
+    };
+    window["FindWidgetParent"] = [](sol::this_state state, uik::Window* window, uik::Widget* child) {
+        return WidgetObjectCast(state, window->FindParent(child));
+    };
+    window["GetWidget"]        = [](sol::this_state state, uik::Window* window, unsigned index) {
         if (index >= window->GetNumWidgets())
             throw GameError(base::FormatString("Widget index %1 is out of bounds", index));
-        return &window->GetWidget(index);
+        return WidgetObjectCast(state, &window->GetWidget(index));
     };
 
     auto action = table.new_usertype<uik::Window::WidgetAction>("Action",
@@ -2652,6 +2839,7 @@ void BindGameLib(sol::state& L)
     entity["GetTime"]              = &Entity::GetTime;
     entity["GetLayer"]             = &Entity::GetLayer;
     entity["SetLayer"]             = &Entity::SetLayer;
+    entity["IsVisible"]            = &Entity::IsVisible;
     entity["IsAnimating"]          = &Entity::IsAnimating;
     entity["HasExpired"]           = &Entity::HasExpired;
     entity["HasBeenKilled"]        = &Entity::HasBeenKilled;
@@ -2666,6 +2854,8 @@ void BindGameLib(sol::state& L)
     entity["PlayAnimationById"]    = &Entity::PlayAnimationById;
     entity["Die"]                  = &Entity::Die;
     entity["TestFlag"]             = &TestFlag<Entity>;
+    entity["SetFlag"]              = &SetFlag<Entity>;
+    entity["SetVisible"]           = &Entity::SetVisible;
     entity["SetTimer"]             = &Entity::SetTimer;
     entity["PostEvent"]            = sol::overload(
         [](Entity* entity, const std::string& message, const std::string& sender, sol::object value) {
@@ -2714,6 +2904,7 @@ void BindGameLib(sol::state& L)
     query_result_set["Next"]    = &DynamicSpatialQueryResultSet::Next;
     query_result_set["Begin"]   = &DynamicSpatialQueryResultSet::BeginIteration;
     query_result_set["Get"]     = &DynamicSpatialQueryResultSet::GetCurrent;
+    query_result_set["GetNext"] = &DynamicSpatialQueryResultSet::GetNext;
 
     auto script_var = table.new_usertype<ScriptVar>("ScriptVar");
     script_var["GetValue"] = ObjectFromScriptVarValue;
@@ -2728,6 +2919,30 @@ void BindGameLib(sol::state& L)
     scene_class["GetScriptVar"]     = (const ScriptVar&(SceneClass::*)(size_t)const)&SceneClass::GetScriptVar;
     scene_class["FindScriptVarById"] = (const ScriptVar*(SceneClass::*)(const std::string&)const)&SceneClass::FindScriptVarById;
     scene_class["FindScriptVarByName"] = (const ScriptVar*(SceneClass::*)(const std::string&)const)&SceneClass::FindScriptVarByName;
+    scene_class["GetLeftBoundary"] = [](const SceneClass& klass, sol::this_state state) {
+        const float* val = klass.GetLeftBoundary();
+        sol::state_view lua(state);
+        return val ? sol::make_object(lua, *val)
+                   : sol::make_object(lua, sol::nil);
+    };
+    scene_class["GetRightBoundary"] = [](const SceneClass& klass, sol::this_state state) {
+        const float* val = klass.GetRightBoundary();
+        sol::state_view lua(state);
+        return val ? sol::make_object(lua, *val)
+                   : sol::make_object(lua, sol::nil);
+    };
+    scene_class["GetTopBoundary"]  = [](const SceneClass& klass, sol::this_state state) {
+        const float* val = klass.GetTopBoundary();
+        sol::state_view lua(state);
+        return val ? sol::make_object(lua, *val)
+                   : sol::make_object(lua, sol::nil);
+    };
+    scene_class["GetBottomBoundary"] = [](const SceneClass& klass, sol::this_state state) {
+        const float* val = klass.GetBottomBoundary();
+        sol::state_view lua(state);
+        return val ? sol::make_object(lua, *val)
+                   : sol::make_object(lua, sol::nil);
+    };
 
     using EntityList = ResultVector<Entity*>;
     auto entity_list = table.new_usertype<EntityList>("EntityList");
@@ -2738,6 +2953,7 @@ void BindGameLib(sol::state& L)
     entity_list["Get"]     = &EntityList::GetCurrent;
     entity_list["GetAt"]   = &EntityList::GetAt;
     entity_list["Size"]    = &EntityList::GetSize;
+    entity_list["GetNext"] = &EntityList::GetNext;
 
     auto scene = table.new_usertype<Scene>("Scene",
        sol::meta_function::index,     &GetScriptVar<Scene>,
@@ -2850,6 +3066,7 @@ void BindGameLib(sol::state& L)
     ray_cast_result_vector["Get"]     = &RayCastResultVector::GetCurrent;
     ray_cast_result_vector["GetAt"]   = &RayCastResultVector::GetAt;
     ray_cast_result_vector["Size"]    = &RayCastResultVector::GetSize;
+    ray_cast_result_vector["GetNext"] = &RayCastResultVector::GetNext;
 
     physics["RayCast"] = sol::overload(
         [](PhysicsEngine& self, const glm::vec2& start, const glm::vec2& end, const std::string& mode) {
@@ -3017,9 +3234,10 @@ void BindGameLib(sol::state& L)
                 return sol::make_object(lua, event.to);
             else if (!std::strcmp(key ,"message"))
                 return sol::make_object(lua, event.message);
-            else if (!std::strcmp(key, "value"))
-                return sol::make_object(lua, event.value);
-            throw GameError(base::FormatString("No such game event index: %1", key));
+
+            const auto* val = base::SafeFind(event.values, std::string(key));
+            return val ? sol::make_object(lua, *val)
+                       : sol::make_object(lua, sol::nil);
         },
         sol::meta_function::new_index, [&L](GameEvent& event, const char* key, sol::object value) {
             if (!std::strcmp(key, "from")) {
@@ -3030,8 +3248,7 @@ void BindGameLib(sol::state& L)
                 else if (value.is<game::Entity*>())
                     event.from = value.as<game::Entity*>();
                 else throw GameError("Unsupported game event from field type.");
-            }
-            else if (!std::strcmp(key, "to")) {
+            } else if (!std::strcmp(key, "to")) {
                 if (value.is<std::string>())
                     event.to = value.as<std::string>();
                 else if (value.is<game::Scene*>())
@@ -3039,38 +3256,40 @@ void BindGameLib(sol::state& L)
                 else if (value.is<game::Entity*>())
                     event.to = value.as<game::Entity*>();
                 else throw GameError("Unsupported game event to field type.");
-            }
-            else if (!std::strcmp(key, "message"))
-                event.message = value.as<std::string>();
-            else if (!std::strcmp(key, "value")) {
+            } else if (!std::strcmp(key, "message")) {
+                if (value.is<std::string>())
+                    event.message = value.as<std::string>();
+                else throw GameError("Unsupported game event message field type.");
+            } else {
+                const auto& k = std::string(key);
                 if (value.is<bool>())
-                    event.value = value.as<bool>();
+                    event.values[key] = value.as<bool>();
                 else if (value.is<int>())
-                    event.value = value.as<int>();
+                    event.values[key] = value.as<int>();
                 else if (value.is<float>())
-                    event.value = value.as<float>();
+                    event.values[key] = value.as<float>();
                 else if (value.is<std::string>())
-                    event.value = value.as<std::string>();
+                    event.values[key] = value.as<std::string>();
                 else if(value.is<glm::vec2>())
-                    event.value = value.as<glm::vec2>();
+                    event.values[key] = value.as<glm::vec2>();
                 else if (value.is<glm::vec3>())
-                    event.value = value.as<glm::vec3>();
+                    event.values[key] = value.as<glm::vec3>();
                 else if (value.is<glm::vec4>())
-                    event.value = value.as<glm::vec4>();
+                    event.values[key] = value.as<glm::vec4>();
                 else if (value.is<base::Color4f>())
-                    event.value = value.as<base::Color4f>();
+                    event.values[key] = value.as<base::Color4f>();
                 else if (value.is<base::FSize>())
-                    event.value = value.as<base::FSize>();
+                    event.values[key] = value.as<base::FSize>();
                 else if (value.is<base::FRect>())
-                    event.value = key, value.as<base::FRect>();
+                    event.values[key] = key, value.as<base::FRect>();
                 else if (value.is<base::FPoint>())
-                    event.value = value.as<base::FPoint>();
+                    event.values[key] = value.as<base::FPoint>();
                 else if (value.is<game::Entity*>())
-                    event.value = value.as<game::Entity*>();
+                    event.values[key] = value.as<game::Entity*>();
                 else if (value.is<game::Scene*>())
-                    event.value = value.as<game::Scene*>();
+                    event.values[key] = value.as<game::Scene*>();
                 else throw GameError("Unsupported game event value type.");
-            } else throw GameError(base::FormatString("No such game event index: %1", key));
+            }
         });
 
     auto kvstore = table.new_usertype<KeyValueStore>("KeyValueStore", sol::constructors<KeyValueStore()>(),

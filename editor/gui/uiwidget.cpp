@@ -43,6 +43,7 @@
 #include "editor/gui/clipboard.h"
 #include "editor/gui/dlgmaterial.h"
 #include "editor/gui/dlgstyleproperties.h"
+#include "editor/gui/dlgstylestring.h"
 #include "editor/gui/drawing.h"
 #include "editor/gui/scriptwidget.h"
 #include "editor/gui/settings.h"
@@ -284,9 +285,11 @@ private:
 class UIWidget::ResizeWidgetTool : public MouseTool
 {
 public:
-    ResizeWidgetTool(State& state, uik::Widget* widget)
+    ResizeWidgetTool(State& state, uik::Widget* widget, bool snap = false, unsigned grid = 0)
       : mState(state)
       , mWidget(widget)
+      , mSnapGrid(snap)
+      , mGridSize(grid)
     {}
     virtual void MouseMove(QMouseEvent* mickey, gfx::Transform& view) override
     {
@@ -296,6 +299,7 @@ public:
         const auto& mouse_delta = mouse_pos_scene - mMousePos;
         mWidget->Grow(mouse_delta.x, mouse_delta.y);
         mMousePos = mouse_pos_scene;
+        mWasSized = true;
     }
     virtual void MousePress(QMouseEvent* mickey, gfx::Transform& view) override
     {
@@ -305,12 +309,39 @@ public:
     }
     virtual bool MouseRelease(QMouseEvent* mickey, gfx::Transform& view) override
     {
+        if (!mWasSized)
+            return true;
+        if (mickey->modifiers() & Qt::ControlModifier)
+            mSnapGrid = !mSnapGrid;
+
+        if (mSnapGrid)
+        {
+            const auto pos  = mWidget->GetPosition();
+            const auto size = mWidget->GetSize();
+            const auto pos_x = pos.GetX();
+            const auto pos_y = pos.GetY();
+            // see where the bottom right corner is right now
+            const auto bottom_right_corner_x = pos_x + size.GetWidth();
+            const auto bottom_right_corner_y = pos_y + size.GetHeight();
+            // snap the bottom right corner to a grid coordinate
+            const auto bottom_aligned_pos_x = std::round(bottom_right_corner_x / mGridSize) * mGridSize;
+            const auto bottom_aligned_pos_y = std::round(bottom_right_corner_y / mGridSize) * mGridSize;
+            // the delta between the position aligned on the grid corner and
+            // the current bottom right corner is the size by which the
+            // widget needs to grow in order to snap to the corner.
+            const auto corner_delta_x = bottom_aligned_pos_x - bottom_right_corner_x;
+            const auto corner_delta_y = bottom_aligned_pos_y - bottom_right_corner_y;
+            mWidget->Grow(corner_delta_x, corner_delta_y);
+        }
         return true;
     }
 private:
     UIWidget::State& mState;
     uik::Widget* mWidget = nullptr;
     glm::vec4 mMousePos;
+    bool mWasSized = false;
+    bool mSnapGrid = false;
+    unsigned mGridSize = 0;
 };
 
 UIWidget::UIWidget(app::Workspace* workspace) : mUndoStack(3)
@@ -829,7 +860,10 @@ bool UIWidget::HasUnsavedChanges() const
 bool UIWidget::OnEscape()
 {
     if (mCurrentTool)
+    {
         mCurrentTool.reset();
+        UncheckPlacementActions();
+    }
     else mUI.tree->ClearSelection();
     return true;
 }
@@ -996,6 +1030,8 @@ void UIWidget::on_actionNewForm_triggered()
     const auto snap = (bool)GetValue(mUI.chkSnap);
     const auto grid = (GridDensity)GetValue(mUI.cmbGrid);
     mCurrentTool.reset(new PlaceWidgetTool(mState, std::make_unique<uik::Form>(), snap, (unsigned)grid));
+    UncheckPlacementActions();
+    mUI.actionNewForm->setChecked(true);
 }
 
 void UIWidget::on_actionNewLabel_triggered()
@@ -1003,6 +1039,8 @@ void UIWidget::on_actionNewLabel_triggered()
     const auto snap = (bool)GetValue(mUI.chkSnap);
     const auto grid = (GridDensity)GetValue(mUI.cmbGrid);
     mCurrentTool.reset(new PlaceWidgetTool(mState, std::make_unique<uik::Label>(), snap, (unsigned)grid));
+    UncheckPlacementActions();
+    mUI.actionNewLabel->setChecked(true);
 }
 
 void UIWidget::on_actionNewPushButton_triggered()
@@ -1010,6 +1048,8 @@ void UIWidget::on_actionNewPushButton_triggered()
     const auto snap = (bool)GetValue(mUI.chkSnap);
     const auto grid = (GridDensity)GetValue(mUI.cmbGrid);
     mCurrentTool.reset(new PlaceWidgetTool(mState, std::make_unique<uik::PushButton>(), snap, (unsigned)grid));
+    UncheckPlacementActions();
+    mUI.actionNewPushButton->setChecked(true);
 }
 
 void UIWidget::on_actionNewCheckBox_triggered()
@@ -1017,6 +1057,8 @@ void UIWidget::on_actionNewCheckBox_triggered()
     const auto snap = (bool)GetValue(mUI.chkSnap);
     const auto grid = (GridDensity)GetValue(mUI.cmbGrid);
     mCurrentTool.reset(new PlaceWidgetTool(mState, std::make_unique<uik::CheckBox>(), snap, (unsigned)grid));
+    UncheckPlacementActions();
+    mUI.actionNewCheckBox->setChecked(true);
 }
 
 void UIWidget::on_actionNewSpinBox_triggered()
@@ -1028,6 +1070,8 @@ void UIWidget::on_actionNewSpinBox_triggered()
     spin->SetMax(100);
     spin->SetValue(GetValue(mUI.spinVal));
     mCurrentTool.reset(new PlaceWidgetTool(mState, std::move(spin), snap, (unsigned)grid));
+    UncheckPlacementActions();
+    mUI.actionNewSpinBox->setChecked(true);
 }
 
 void UIWidget::on_actionNewSlider_triggered()
@@ -1035,6 +1079,8 @@ void UIWidget::on_actionNewSlider_triggered()
     const auto snap = (bool)GetValue(mUI.chkSnap);
     const auto grid = (GridDensity)GetValue(mUI.cmbGrid);
     mCurrentTool.reset(new PlaceWidgetTool(mState, std::make_unique<uik::Slider>(), snap, (unsigned)grid));
+    UncheckPlacementActions();
+    mUI.actionNewSlider->setChecked(true);
 }
 
 void UIWidget::on_actionNewProgressBar_triggered()
@@ -1045,6 +1091,8 @@ void UIWidget::on_actionNewProgressBar_triggered()
     widget->SetText("%1%");
     widget->SetValue(0.5f);
     mCurrentTool.reset(new PlaceWidgetTool(mState, std::move(widget), snap, (unsigned)grid));
+    UncheckPlacementActions();
+    mUI.actionNewProgressBar->setChecked(true);
 }
 
 void UIWidget::on_actionNewRadioButton_triggered()
@@ -1053,6 +1101,8 @@ void UIWidget::on_actionNewRadioButton_triggered()
     const auto grid = (GridDensity)GetValue(mUI.cmbGrid);
     auto widget = std::make_unique<uik::RadioButton>();
     mCurrentTool.reset(new PlaceWidgetTool(mState, std::move(widget), snap, (unsigned)grid));
+    UncheckPlacementActions();
+    mUI.actionNewRadioButton->setChecked(true);
 }
 
 void UIWidget::on_actionNewGroupBox_triggered()
@@ -1060,6 +1110,8 @@ void UIWidget::on_actionNewGroupBox_triggered()
     const auto snap = (bool)GetValue(mUI.chkSnap);
     const auto grid = (GridDensity)GetValue(mUI.cmbGrid);
     mCurrentTool.reset(new PlaceWidgetTool(mState, std::make_unique<uik::GroupBox>(), snap, (unsigned)grid));
+    UncheckPlacementActions();
+    mUI.actionNewGroupBox->setChecked(true);
 }
 
 void UIWidget::on_actionWidgetDelete_triggered()
@@ -1317,6 +1369,37 @@ void UIWidget::on_btnEditWidgetStyle_clicked()
         DisplayCurrentWidgetProperties();
     }
 }
+void UIWidget::on_btnEditWidgetStyleString_clicked()
+{
+    if (auto* widget = GetCurrentWidget())
+    {
+        std::string old_style_string = widget->GetStyleString();
+
+        const auto& widget_id = widget->GetId();
+        const auto& style_key = widget_id + "/";
+        boost::erase_all(old_style_string, style_key);
+
+        DlgWidgetStyleString dlg(this, app::FromUtf8(old_style_string));
+        if (dlg.exec() == QDialog::Rejected)
+            return;
+
+        const auto& new_style_string = app::ToUtf8(dlg.GetStyleString());
+
+        mState.style->DeleteMaterials(widget->GetId());
+        mState.style->DeleteProperties(widget->GetId());
+        mState.painter->DeleteMaterialInstances(widget->GetId());
+
+        if (!mState.style->ParseStyleString(widget->GetId(), new_style_string))
+        {
+            ERROR("Widget style string contains errors and cannot be used.[widget='%1']", widget->GetName());
+            mState.style->ParseStyleString(widget->GetId(), old_style_string);
+            return;
+        }
+        widget->SetStyleString(new_style_string);
+        SetValue(mUI.widgetStyleString, new_style_string);
+    }
+}
+
 void UIWidget::on_btnResetWidgetStyle_clicked()
 {
     if (auto* widget = GetCurrentWidget())
@@ -1368,6 +1451,32 @@ void UIWidget::on_btnEditWindowStyle_clicked()
     boost::erase_all(style_string, "window/");
     // set the actual style string.
     mState.window.SetStyleString(std::move(style_string));
+}
+
+void UIWidget::on_btnEditWindowStyleString_clicked()
+{
+    std::string old_style_string = mState.window.GetStyleString();
+
+    boost::erase_all(old_style_string, "window/");
+
+    DlgWidgetStyleString dlg(this, app::FromUtf8(old_style_string));
+    if (dlg.exec() == QDialog::Rejected)
+        return;
+
+    const auto& new_style_string = app::ToUtf8(dlg.GetStyleString());
+
+    mState.style->DeleteMaterials("window");
+    mState.style->DeleteProperties("window");
+    mState.painter->DeleteMaterialInstances("window");
+
+    if (!mState.style->ParseStyleString("window", new_style_string))
+    {
+        ERROR("Window style string contains errors and cannot be used. [window='%1']", mState.window.GetName());
+        mState.style->ParseStyleString("window", old_style_string);
+        return;
+    }
+    mState.window.SetStyleString(new_style_string);
+    SetValue(mUI.windowStyleString, new_style_string);
 }
 
 void UIWidget::on_btnResetWindowStyle_clicked()
@@ -1760,7 +1869,7 @@ void UIWidget::MousePress(QMouseEvent* mickey)
             //DEBUG("Hit pos: %1,%2", widget_hit_point.GetX(), widget_hit_point.GetY());
 
             if (size_box.TestPoint(mouse_in_scene.x, mouse_in_scene.y))
-                mCurrentTool.reset(new ResizeWidgetTool(mState, widget));
+                mCurrentTool.reset(new ResizeWidgetTool(mState, widget, snap, grid_size));
             else mCurrentTool.reset(new MoveWidgetTool(mState, widget, snap, grid_size));
             mUI.tree->SelectItemById(app::FromUtf8(widget->GetId()));
         }
@@ -1810,6 +1919,7 @@ void UIWidget::MouseRelease(QMouseEvent* mickey)
     else if (mCurrentTool && mCurrentTool->MouseRelease(mickey, view))
     {
         mCurrentTool.reset();
+        UncheckPlacementActions();
     }
 }
 void UIWidget::MouseDoubleClick(QMouseEvent* mickey)
@@ -1854,7 +1964,10 @@ bool UIWidget::KeyPress(QKeyEvent* key)
             break;
         case Qt::Key_Escape:
             if (mCurrentTool)
+            {
                 mCurrentTool.reset();
+                UncheckPlacementActions();
+            }
             else mUI.tree->ClearSelection();
             break;
         default:
@@ -2156,6 +2269,17 @@ bool UIWidget::LoadStyleQuiet(const std::string& uri)
     mState.window.SetStyleName(uri);
     INFO("Loaded UI style '%1'.", uri);
     return true;
+}
+
+void UIWidget::UncheckPlacementActions()
+{
+    mUI.actionNewForm->setChecked(false);
+    mUI.actionNewLabel->setChecked(false);
+    mUI.actionNewPushButton->setChecked(false);
+    mUI.actionNewCheckBox->setChecked(false);
+    mUI.actionNewSpinBox->setChecked(false);
+    mUI.actionNewSlider->setChecked(false);
+    mUI.actionNewProgressBar->setChecked(false);
 }
 
 void UIWidget::UpdateDeletedResourceReferences()

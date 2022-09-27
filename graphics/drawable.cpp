@@ -1799,6 +1799,10 @@ bool KinematicsParticleEngineClass::IsAlive(const InstanceState& state) const
     else if (state.time > mParams.max_time)
         return false;
 
+    if (mParams.mode == SpawnPolicy::Continuous ||
+        mParams.mode == SpawnPolicy::Maintain)
+        return true;
+
     return !state.particles.empty();
 }
 
@@ -1810,6 +1814,12 @@ void KinematicsParticleEngineClass::Restart(const Environment& env, InstanceStat
     state.delay = mParams.delay;
     state.time  = 0.0f;
     state.hatching = 0.0f;
+    // if the spawn policy is continuous the num particles
+    // is a rate of particles per second. in order to avoid
+    // a massive initial burst of particles skip the init here
+    if (mParams.mode == SpawnPolicy::Continuous)
+        return;
+
     if (state.delay != 0.0f)
         state.hatching = mParams.num_particles;
     else InitParticles(env, state, size_t(mParams.num_particles));

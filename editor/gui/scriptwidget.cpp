@@ -244,6 +244,8 @@ void InitDoc()
     DOC_TABLE_PROPERTY("game.KeyValueStore", "State", "Global key-value store instance.");
     DOC_TABLE_PROPERTY("game.Engine", "Game", "Global game engine instance.");
     DOC_TABLE_PROPERTY("game.Scene", "Scene", "Global scene instance or nil if no scene is being played.");
+    DOC_FUNCTION_3("...", "CallMethod", "Call a method on an entity, scene or UI with variable arguments.",
+                   "game.Entity|game.Scene|uik.Window", "object", "string", "method", "...", "args");
 
     DOC_TABLE("util");
     DOC_FUNCTION_1("float", "GetRotationFromMatrix", "Get the rotational component from the given matrix.",
@@ -696,10 +698,6 @@ void InitDoc()
     DOC_META_METHOD_2("wdk.KeyBitSet", "operator |", "Lua bitwise or meta method.", "wdk.KeyBitSet", "bits", "int", "key");
 
     DOC_TABLE("uik");
-    DOC_FUNCTION_2("uik.Widget", "WidgetCast", "Downcast a Widget object to concrete widget type.<br>"
-                                             "Returns nil if the widget doesn't have the right type.",
-                 "uik.Widget", "widget", "string", "downcast_type");
-
     DOC_TABLE("uik.Widget");
     DOC_METHOD_0("string", "GetId", "Get the widget ID.");
     DOC_METHOD_0("string", "GetName", "Get the widget name.");
@@ -719,6 +717,14 @@ void InitDoc()
     DOC_METHOD_2("void", "Translate", "Translate the widget relative to it's current position.", "float", "dx", "float", "dy");
     DOC_METHOD_1("void", "SetVisible", "Change widget visibility.", "bool", "visible");
     DOC_METHOD_1("void", "Enable", "Enable widget.", "bool", "enable");
+    DOC_METHOD_2("void", "SetStyleProperty", "Set a painter specific styling property value on the widget.<br>"
+                                             "These style properties take precedence over any other styling.",
+                 "string", "key", "int|float|string|base.Color4f", "value");
+    DOC_METHOD_1("void", "DeleteStyleProperty", "Delete a specific styling property by the given key.",
+                 "string", "key");
+    DOC_METHOD_1("int|float|string|base.Color4f", "GetStyleProperty", "Get a styling property by the given key.<br>"
+                                                                          "Returns nil if no such property exists.",
+                 "string", "key");
     DOC_METHOD_0("uik.Label", "AsLabel", "Cast the widget to Label. Returns nil if the cast failed.");
     DOC_METHOD_0("uik.PushButton", "AsPushButton", "Cast the widget to PushButton. Returns nil if the cast failed.");
     DOC_METHOD_0("uik.CheckBox", "AsCheckBox", "Cast the widget to CheckBox. Returns nil if the cast failed.");
@@ -771,22 +777,22 @@ void InitDoc()
     DOC_METHOD_0("string", "GetName", "Get the window name.");
     DOC_METHOD_0("int", "GetNumWidgets", "Get the number of widgets in the window.");
     DOC_METHOD_1("uik.Widget", "FindWidgetById", "Find a widget by the given Widget ID.<br>"
-                                                 "Returns nil if there's no such widget.", "string", "id");
-    DOC_METHOD_2("uik.Widget", "FindWidgetById", "Find a widget by the given Widget ID and cast it to a concrete widget type.<br>"
-                                                 "Returns nil if there's no such widget or the widget doesn't have the right type.",
-                 "string", "id", "string", "downcast_type");
+                                                 "The returned widget will already be downcast to the right widget type.<br>"
+                                                 "Returns nil if there's no such widget.",
+                 "string", "id");
     DOC_METHOD_1("uik.Widget", "FindWidgetByName", "Find a widget by the given Widget name.<br>"
                                                    "If there are multiple widgets by the same name it's unspecified which one will be returned.<br>"
+                                                   "The returned widget will already be downcast to the right widget type.<br>"
                                                    "Returns nil if there's no such widget.",
                  "string", "name");
-    DOC_METHOD_2("uik.Widget", "FindWidgetByName", "Find a widget by the given Widget name and cast it to a concrete widget type.<br>"
-                                                   "If there are multiple widgets by the same name it's unspecified which one will be returned.<br>"
-                                                   "Returns nil if there's no such widget or the widget doesn't have the right type.",
-                 "string", "name", "string", "downcast_type");
     DOC_METHOD_1("uik.Widget", "FindWidgetParent", "Find the parent widget of the given widget.<br>"
-                                                   "Returns nil if the widget is the root widget and doesn't have a parent.",
+                                                   "Returns nil if the widget is the root widget and doesn't have a parent."
+                                                   "The returned widget will already be downcast to the right widget type.<br>",
                  "uik.Widget", "widget");
-    DOC_METHOD_1("uik.Widget", "GetWidget", "Get a widget by the given index.", "int", "index");
+    DOC_METHOD_1("uik.Widget", "GetWidget", "Get a widget by the given index."
+                                            "The returned widget will already be downcast to the right widget type.<br>",
+                 "unsigned", "index");
+
     DOC_TABLE("uik.Action");
     DOC_TABLE_PROPERTY("string", "name", "Name of the widget that triggered the action.");
     DOC_TABLE_PROPERTY("string", "id", "ID of the widget that triggered the action.");
@@ -1091,6 +1097,7 @@ void InitDoc()
     DOC_METHOD_0("float", "GetTime", "Get the entity's current accumulated (life) time.");
     DOC_METHOD_0("int" , "GetLayer", "Get the entity's render layer in the scene rendering.");
     DOC_METHOD_1("void", "SetLayer", "Set the entity's render layer in the scene rendering.", "int", "layer");
+    DOC_METHOD_0("bool", "IsVisible", "Checks whether the entity is currently visible or not.");
     DOC_METHOD_0("bool", "IsAnimating", "Checks whether the entity is currently playing an animation or not.");
     DOC_METHOD_0("bool", "HasExpired", "Checks whether the entity has expired, i.e. exceeded it's max lifetime.");
     DOC_METHOD_0("bool", "HasBeenKilled", "Checks whether the entity has been killed.<br>"
@@ -1120,7 +1127,13 @@ void InitDoc()
                                                         "Any current animation is replaced by this new animation.<br>"
                                                         "Returns the animation instance or nil if no such animation could be found.",
                  "string", "id");
-    DOC_METHOD_1("bool", "TestFlag", "Test entity flag.", "string", "flag_name");
+    DOC_METHOD_1("bool", "TestFlag", "Test entity flag.<br>"
+                                     "Possible flags: 'VisibleInGame', 'LimitLifetime', 'KillAtLifetime', 'KillAtBoundary', 'TickEntity', 'UpdateEntity', 'WantsKeyEvents', 'WantsMouseEvents'",
+                 "string", "flag_name");
+    DOC_METHOD_2("void", "SetFlag", "Set entity flag.<br>"
+                                    "Possible flags: 'VisibleInGame', 'LimitLifetime', 'KillAtLifetime', 'KillAtBoundary', 'TickEntity', 'UpdateEntity', 'WantsKeyEvents', 'WantsMouseEvents'",
+                 "string", "name", "bool", "on_off");
+    DOC_METHOD_1("void", "SetVisible", "Set entity visibility flag.", "bool", "on_off");
     DOC_METHOD_0("void", "Die", "Let the entity die and be removed from the scene.");
     DOC_METHOD_2("void", "SetTimer", "Set a named timer on the entity.<br>"
                                      "The timer's resolution is based on the game's update resolution configured in the project settings.<br>"
@@ -1164,6 +1177,7 @@ void InitDoc()
                                   "The iteration is already started automatically when the query is created.<br>"
                                   "So this only needs to be called if restarting.");
     DOC_METHOD_0("game.EntityNode", "Get", "Get the current item at this point of iteration over the result set.");
+    DOC_METHOD_0("game.EntityNode", "GetNext", "Get the current item and move onto next item in the result set.");
 
     DOC_TABLE("game.ScriptVar");
     DOC_METHOD_0("bool|float|string|int|vec2", "GetValue", "Get the value of the script variable.");
@@ -1184,6 +1198,10 @@ void InitDoc()
     DOC_METHOD_1("game.ScriptVar", "FindScriptVarByName", "Find a script variable by name.<br>"
                                                           "Returns nil if no such script variable could be found.",
                  "string", "name");
+    DOC_METHOD_0("float|nil", "GetLeftBoundary", "Get the left boundary of the scene if any. If not set then nil is returned.");
+    DOC_METHOD_0("float|nil", "GetRightBoundary", "Get the right boundary of the scene if any. If not set then nil is returned.");
+    DOC_METHOD_0("float|nil", "GetTopBoundary", "Get the top boundary of the scene if any. If not set then nil is returned.");
+    DOC_METHOD_0("float|nil", "GetBottomBoundary", "Get the bottom boundary of the scene if any. If not set then nil is returned.");
 
     DOC_TABLE("game.EntityList");
     DOC_METHOD_0("bool", "IsEmpty", "Check whether the entity list is an empty list or not.");
@@ -1195,6 +1213,7 @@ void InitDoc()
                                   "so this only needs to be called if restarting.");
     DOC_METHOD_0("game.Entity", "Get", "Get the current item at this point of iteration over the list.");
     DOC_METHOD_1("game.Entity", "GetAt", "Get an item at a given index.", "unsigned", "index");
+    DOC_METHOD_0("game.Entity", "GetNext", "Get the current item and move on to the next item.");
     DOC_METHOD_0("unsigned", "Size", "Get the number of items in the entity list.");
 
     DOC_TABLE("game.Scene");
@@ -1270,6 +1289,7 @@ void InitDoc()
                                   "so this only needs to be called if restarting.");
     DOC_METHOD_0("game.RayCastResult", "Get", "Get the current item at this point of iteration over the result vector.");
     DOC_METHOD_1("game.RayCastResult", "GetAt", "Get a result at a given index.", "size_t", "index");
+    DOC_METHOD_0("game.RayCastResult", "GetNext", "Get the current item and move onto next.");
     DOC_METHOD_0("unsigned", "Size", "Get the number of items in the ray cast result vector.");
 
     DOC_TABLE("game.Physics");
@@ -1382,6 +1402,8 @@ void InitDoc()
                                        "Indicates whether screen_coords are valid or not.");
 
     DOC_TABLE("game.GameEvent");
+    DOC_META_METHOD_0("...", "index", "Lua index meta method.");
+    DOC_META_METHOD_0("...", "newindex", "Lua new index meta method.");
     DOC_OBJECT_PROPERTY("string|game.Entity|game.Scene", "from", "Free form name or identifier of the event sender or Scene or Entity object.");
     DOC_OBJECT_PROPERTY("string|game.Entity|game.Scene", "to", "Free form name or identifier of the event receiver or Scene or Entity object.");
     DOC_OBJECT_PROPERTY("string", "message", "Message string.");
@@ -1532,6 +1554,16 @@ ScriptWidget::ScriptWidget(app::Workspace* workspace)
 
     mUI.setupUi(this);
     //mUI.actionFindText->setShortcut(QKeySequence::Find); // use custom
+
+    const auto font_sizes = QFontDatabase::standardSizes();
+    for (int size : font_sizes)
+    {
+        QSignalBlocker s(mUI.editorFontSize);
+        mUI.editorFontSize->addItem(QString::number(size));
+    }
+    SetValue(mUI.editorFontName, -1);
+    SetValue(mUI.editorFontSize, -1);
+    SetValue(mUI.chkFormatOnSave, Qt::PartiallyChecked);
 
     mUI.formatter->setVisible(false);
     mUI.modified->setVisible(false);
@@ -1747,8 +1779,31 @@ ScriptWidget::ScriptWidget(app::Workspace* workspace, const app::Resource& resou
     LoadDocument(mFilename);
     setWindowTitle(mResourceName);
 
+    bool show_settings = true;
     GetUserProperty(resource, "main_splitter", mUI.mainSplitter);
     GetUserProperty(resource, "help_splitter", mUI.helpSplitter);
+    GetUserProperty(resource, "show_settings", &show_settings);
+    SetVisible(mUI.settings, show_settings);
+
+    QString font_name;
+    if (GetUserProperty(resource, "font_name", &font_name))
+    {
+        mUI.code->SetFontName(font_name);
+        SetValue(mUI.editorFontName, font_name);
+    }
+
+    QString font_size = 0;
+    if (GetUserProperty(resource, "font_size", &font_size))
+    {
+        mUI.code->SetFontSize(font_size.toInt());
+        SetValue(mUI.editorFontSize, font_size);
+    }
+
+    mUI.code->ApplySettings();
+
+    bool format_on_save = false;
+    if (GetProperty(resource, "format_on_save", &format_on_save))
+        SetValue(mUI.chkFormatOnSave, format_on_save);
 }
 ScriptWidget::~ScriptWidget()
 {
@@ -1791,6 +1846,8 @@ void ScriptWidget::AddActions(QToolBar& bar)
     bar.addAction(mUI.actionReplaceText);
     bar.addSeparator();
     bar.addAction(mUI.actionFindHelp);
+    bar.addSeparator();
+    bar.addAction(mUI.actionSettings);
 }
 void ScriptWidget::AddActions(QMenu& menu)
 {
@@ -1802,6 +1859,8 @@ void ScriptWidget::AddActions(QMenu& menu)
     menu.addAction(mUI.actionFindHelp);
     menu.addSeparator();
     menu.addAction(mUI.actionOpen);
+    menu.addSeparator();
+    menu.addAction(mUI.actionSettings);
 }
 
 void ScriptWidget::Cut(Clipboard&)
@@ -1837,6 +1896,7 @@ bool ScriptWidget::SaveState(gui::Settings& settings) const
     settings.SetValue("Script", "resource_id", mResourceID);
     settings.SetValue("Script", "resource_name", mResourceName);
     settings.SetValue("Script", "filename", mFilename);
+    settings.SetValue("Script", "show_settings", mUI.settings->isVisible());
     settings.SaveWidget("Script", mUI.findText);
     settings.SaveWidget("Script", mUI.replaceText);
     settings.SaveWidget("Script", mUI.findBackwards);
@@ -1845,13 +1905,27 @@ bool ScriptWidget::SaveState(gui::Settings& settings) const
     settings.SaveWidget("Script", mUI.mainSplitter);
     settings.SaveWidget("Script", mUI.helpSplitter);
     settings.SaveWidget("Script", mUI.tableView);
+
+    if (mUI.editorFontName->currentIndex() != -1)
+        settings.SetValue("Script", "font_name", mUI.editorFontName->currentFont().toString());
+    if (mUI.editorFontSize->currentIndex() != -1)
+        settings.SetValue("Script", "font_size", mUI.editorFontSize->currentText());
+
+    const auto format_on_save = mUI.chkFormatOnSave->checkState();
+    if (format_on_save == Qt::Checked)
+        settings.SetValue("Script", "format_on_save", true);
+    else if (format_on_save == Qt::Unchecked)
+        settings.SetValue("Script", "format_on_save", false);
+
     return true;
 }
 bool ScriptWidget::LoadState(const gui::Settings& settings)
 {
+    bool show_settings = true;
     settings.GetValue("Script", "resource_id", &mResourceID);
     settings.GetValue("Script", "resource_name", &mResourceName);
     settings.GetValue("Script", "filename", &mFilename);
+    settings.GetValue("Script", "show_settings", &show_settings);
     settings.LoadWidget("Script", mUI.findText);
     settings.LoadWidget("Script", mUI.replaceText);
     settings.LoadWidget("Script", mUI.findBackwards);
@@ -1860,6 +1934,28 @@ bool ScriptWidget::LoadState(const gui::Settings& settings)
     settings.LoadWidget("Script", mUI.mainSplitter);
     settings.LoadWidget("Script", mUI.helpSplitter);
     settings.LoadWidget("Script", mUI.tableView);
+    SetVisible(mUI.settings, show_settings);
+
+    QString font_name;
+    if (settings.GetValue("Script", "font_name", &font_name))
+    {
+        mUI.code->SetFontName(font_name);
+        SetValue(mUI.editorFontName, font_name);
+    }
+
+    QString font_size = 0;
+    if (settings.GetValue("Script", "font_size", &font_size))
+    {
+        mUI.code->SetFontSize(font_size.toInt());
+        SetValue(mUI.editorFontSize, font_size);
+    }
+
+    bool format_on_save = false;
+    if (settings.GetValue("Script", "format_on_save", &format_on_save))
+        SetValue(mUI.chkFormatOnSave, format_on_save);
+
+    mUI.code->ApplySettings();
+
     if (!mResourceName.isEmpty())
         setWindowTitle(mResourceName);
     if (mFilename.isEmpty())
@@ -1923,7 +2019,9 @@ void ScriptWidget::on_actionSave_triggered()
         mFileHash = qHash(text);
     }
 
-    if (mSettings.lua_format_on_save)
+    const auto format_on_save = mUI.chkFormatOnSave->checkState();
+    if ((format_on_save == Qt::PartiallyChecked && mSettings.lua_format_on_save) ||
+         format_on_save == Qt::Checked)
     {
         QTextCursor cursor = mUI.code->textCursor();
         auto cursor_position = cursor.position();
@@ -1990,6 +2088,18 @@ void ScriptWidget::on_actionSave_triggered()
         app::ScriptResource resource(script, mResourceName);
         SetUserProperty(resource, "main_splitter", mUI.mainSplitter);
         SetUserProperty(resource, "help_splitter", mUI.helpSplitter);
+        SetUserProperty(resource, "show_settings", mUI.settings->isVisible());
+
+        if (mUI.editorFontName->currentIndex() != -1)
+            SetUserProperty(resource, "font_name", mUI.editorFontName->currentFont().toString());
+        if (mUI.editorFontSize->currentIndex() != -1)
+            SetUserProperty(resource, "font_size", mUI.editorFontSize->currentText());
+
+        if (format_on_save == Qt::Checked)
+            SetProperty(resource, "format_on_save", true);
+        else if (format_on_save == Qt::Unchecked)
+            SetProperty(resource, "format_on_save", false);
+
         mWorkspace->SaveResource(resource);
         setWindowTitle(mResourceName);
         mResourceID = app::FromUtf8(script.GetId());
@@ -1999,6 +2109,21 @@ void ScriptWidget::on_actionSave_triggered()
         auto* resource = mWorkspace->FindResourceById(mResourceID);
         SetUserProperty(*resource, "main_splitter", mUI.mainSplitter);
         SetUserProperty(*resource, "help_splitter", mUI.helpSplitter);
+        SetUserProperty(*resource, "show_settings", mUI.settings->isVisible());
+
+        if (mUI.editorFontName->currentIndex() != -1)
+            SetUserProperty(*resource, "font_name", mUI.editorFontName->currentFont().toString());
+        else resource->DeleteUserProperty("font_name");
+        if (mUI.editorFontSize->currentIndex() != -1)
+            SetUserProperty(*resource, "font_size", mUI.editorFontSize->currentText());
+        else resource->DeleteUserProperty("font_size");
+
+        if (format_on_save == Qt::PartiallyChecked)
+            resource->DeleteProperty("format_on_save");
+        else if (format_on_save == Qt::Checked)
+            resource->SetProperty("format_on_save", true);
+        else if (format_on_save == Qt::Unchecked)
+            resource->SetProperty("format_on_save", false);
     }
 }
 
@@ -2049,6 +2174,11 @@ void ScriptWidget::on_actionReplaceText_triggered()
     SetEnabled(mUI.btnReplaceNext, true);
     SetEnabled(mUI.btnReplaceAll, true);
     SetEnabled(mUI.replaceText, true);
+}
+
+void ScriptWidget::on_actionSettings_triggered()
+{
+    SetVisible(mUI.settings, true);
 }
 
 void ScriptWidget::on_btnFindNext_clicked()
@@ -2166,6 +2296,35 @@ void ScriptWidget::on_btnAcceptReload_clicked()
     SetEnabled(mUI.actionReplaceText, true);
     SetEnabled(mUI.actionSave, true);
     SetVisible(mUI.modified, false);
+}
+
+void ScriptWidget::on_btnResetFont_clicked()
+{
+    SetValue(mUI.editorFontName, -1);
+    SetValue(mUI.editorFontSize, -1);
+    mUI.code->ResetFontSize();
+    mUI.code->ResetFontName();
+    mUI.code->ApplySettings();
+}
+
+void ScriptWidget::on_btnSettingsClose_clicked()
+{
+    SetVisible(mUI.settings, false);
+}
+
+void ScriptWidget::on_editorFontName_currentIndexChanged(int)
+{
+    if (mUI.editorFontName->currentIndex() == -1)
+        mUI.code->ResetFontName();
+    else mUI.code->SetFontName(mUI.editorFontName->currentFont().toString());
+    mUI.code->ApplySettings();
+}
+void ScriptWidget::on_editorFontSize_currentIndexChanged(int)
+{
+    if (mUI.editorFontSize->currentIndex() == -1)
+        mUI.code->ResetFontSize();
+    else mUI.code->SetFontSize(GetValue(mUI.editorFontSize));
+    mUI.code->ApplySettings();
 }
 
 void ScriptWidget::on_filter_textChanged(const QString& text)

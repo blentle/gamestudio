@@ -9,7 +9,7 @@ function PlayEffect(ui)
     local title = util.FormatString("%1/%2 %3", math.floor(index), #Particles,
                                     Particles[index])
 
-    local text = ui:FindWidgetByName('text', 'Label')
+    local text = ui:FindWidgetByName('text')
     text:SetText(title);
 
     local event = game.GameEvent:new()
@@ -43,6 +43,8 @@ function OnUIAction(ui, action)
         event.message = 'background'
         event.value = action.value
         Game:PostEvent(event)
+    elseif action.name == 'fullscreen' then
+        Game:SetFullScreen(action.value)
     end
     PlayEffect(ui)
 end

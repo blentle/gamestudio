@@ -52,8 +52,8 @@ namespace gui
         virtual void Initialize(const UISettings& settings) override;
         virtual void AddActions(QToolBar& bar) override;
         virtual void AddActions(QMenu& menu) override;
-        virtual bool SaveState(Settings& settings) const;
-        virtual bool LoadState(const Settings& settings);
+        virtual bool SaveState(Settings& settings) const override;
+        virtual bool LoadState(const Settings& settings) override;
         virtual bool CanTakeAction(Actions action, const Clipboard* clipboard) const override;
         virtual void Cut(Clipboard& clipboard) override;
         virtual void Copy(Clipboard& clipbboad)  const override;
@@ -120,8 +120,10 @@ namespace gui
         void on_btnViewMinus90_clicked();
         void on_btnResetTransform_clicked();
         void on_btnEditWidgetStyle_clicked();
+        void on_btnEditWidgetStyleString_clicked();
         void on_btnResetWidgetStyle_clicked();
         void on_btnEditWindowStyle_clicked();
+        void on_btnEditWindowStyleString_clicked();
         void on_btnResetWindowStyle_clicked();
         void on_btnEditScript_clicked();
         void on_btnAddScript_clicked();
@@ -155,6 +157,7 @@ namespace gui
         bool LoadStyleVerbose(const QString& name);
         bool LoadStyleQuiet(const std::string& uri);
         void UpdateDeletedResourceReferences();
+        void UncheckPlacementActions();
         uik::FSize GetFormSize() const;
     private:
         Ui::UIWidget mUI;
