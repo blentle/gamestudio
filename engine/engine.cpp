@@ -32,6 +32,7 @@
 #include "base/trace.h"
 #include "game/entity.h"
 #include "game/treeop.h"
+#include "game/tilemap.h"
 #include "graphics/image.h"
 #include "graphics/device.h"
 #include "graphics/painter.h"
@@ -90,7 +91,7 @@ public:
         mRuntime->SetPhysicsEngine(&mPhysics);
         mRuntime->SetStateStore(&mStateStore);
         mRuntime->SetAudioEngine(mAudio.get());
-        mRuntime->SetDataLoader(mGameDataLoader);
+        mRuntime->SetDataLoader(mEngineDataLoader);
         mRuntime->Init();
         mUIStyle.SetClassLibrary(mClasslib);
         mUIPainter.SetPainter(mPainter.get());
@@ -129,11 +130,12 @@ public:
 
     virtual void SetEnvironment(const Environment& env) override
     {
-        mClasslib       = env.classlib;
-        mGameDataLoader = env.game_data_loader;
-        mAudioLoader    = env.audio_loader;
-        mDirectory      = env.directory;
-        mGameHome       = env.game_home;
+        mClasslib         = env.classlib;
+        mEngineDataLoader = env.engine_loader;
+        mAudioLoader      = env.audio_loader;
+        mGameLoader       = env.game_loader;
+        mDirectory        = env.directory;
+        mGameHome         = env.game_home;
 
         // set the unfortunate global gfx loader
         gfx::SetResourceLoader(env.graphics_loader);
@@ -236,7 +238,8 @@ public:
                 const engine::FRect mViewRect;
                 const glm::mat4 mViewMatrix;
             };
-            Culler cull(engine::FRect(0.0f, 0.0f, game_view_width, game_view_height), view.GetAsMatrix());
+            const gfx::FRect viewport(0.0f, 0.0f, game_view_width, game_view_height);
+            Culler cull(viewport, view.GetAsMatrix());
 
             // set the actual device viewport for rendering into the window buffer.
             // the device viewport retains the game's logical viewport aspect ratio
@@ -251,12 +254,16 @@ public:
 
             gfx::Transform transform;
             TRACE_CALL("Renderer::BeginFrame", mRenderer.BeginFrame());
-            TRACE_CALL("Renderer::DrawScene", mRenderer.Draw(*mScene , *mPainter , transform, nullptr, &cull));
+            if (mTilemap)
+            {
+                TRACE_CALL("Renderer::DrawMap", mRenderer.Draw(*mTilemap, viewport, *mPainter, transform));
+            }
+            TRACE_CALL("Renderer::DrawScene", mRenderer.Draw(*mPainter, &cull));
+            TRACE_CALL("Renderer::EndFrame", mRenderer.EndFrame());
             if (mDebug.debug_draw && mPhysics.HaveWorld())
             {
                 TRACE_CALL("Physics::DebugDraw", mPhysics.DebugDrawObjects(*mPainter , transform));
             }
-            TRACE_CALL("Renderer::EndFrame", mRenderer.EndFrame());
 
             TRACE_BLOCK("DebugDraw",
                 for (const auto& draw : mDebugDraws)
@@ -743,26 +750,26 @@ private:
     bool HaveOpenUI() const
     { return !mUIStack.empty(); }
 
-    void LoadStyle(const std::string& name)
+    void LoadStyle(const std::string& uri)
     {
         // todo: if the style loading somehow fails, then what?
         mUIStyle.ClearProperties();
         mUIStyle.ClearMaterials();
         mUIState.Clear();
 
-        auto data = mGameDataLoader->LoadGameData(name);
+        auto data = mEngineDataLoader->LoadEngineDataUri(uri);
         if (!data)
         {
-            ERROR("Failed to load UI style '%1' data.", name);
+            ERROR("Failed to load UI style. [uri='%1']", uri);
             return;
         }
 
         if (!mUIStyle.LoadStyle(*data))
         {
-            ERROR("Failed to parse UI style '%1'.", name);
+            ERROR("Failed to parse UI style. [uri='%1']", uri);
             return;
         }
-        DEBUG("Loaded UI style '%1'", name);
+        DEBUG("Loaded UI style file successfully. [uri='%1']", uri);
     }
 
     void OnAction(const engine::OpenUIAction& action)
@@ -814,6 +821,24 @@ private:
             mPhysics.DeleteAll();
             mPhysics.CreateWorld(*mScene);
         }
+        mRenderer.CreateScene(*mScene);
+
+        const auto& klass = mScene->GetClass();
+        if (klass.HasTilemap())
+        {
+            const auto& mapId = klass.GetTilemapId();
+            const auto& map   = mClasslib->FindTilemapClassById(mapId);
+            if (map == nullptr)
+            {
+                ERROR("Failed to load tilemap class object. [id='%1']", mapId);
+            }
+            else
+            {
+                mTilemap = game::CreateTilemap(map);              
+                mTilemap->Load(*mGameLoader, 1024); // todo:
+            }
+        }
+
         mRuntime->BeginPlay(mScene.get());
     }
     void OnAction(const engine::SuspendAction& action)
@@ -830,6 +855,7 @@ private:
             return;
         mRuntime->EndPlay(mScene.get());
         mScene.reset();
+        mTilemap.reset();
     }
     void OnAction(const engine::QuitAction& action)
     {
@@ -927,8 +953,8 @@ private:
             if (mPhysics.HaveWorld())
             {
                 std::vector<engine::ContactEvent> contacts;
-                // apply any pending changes such as velocity updates
-                // rigid body flag state changes, static body position
+                // Apply any pending changes such as velocity updates,
+                // rigid body flag state changes, new rigid bodies etc.
                 // changes to the physics world.
                 TRACE_CALL("Physics::UpdateWorld", mPhysics.UpdateWorld(*mScene));
                 // Step the simulation forward.
@@ -944,7 +970,13 @@ private:
                     }
                 );
             }
-            TRACE_CALL("Renderer::Update", mRenderer.Update(*mScene, game_time, dt));
+
+            // Update renderers data structures from the scene.
+            // This involves creating new render nodes for new entities
+            // that have been spawned etc.
+            TRACE_CALL("Renderer::UpdateScene", mRenderer.UpdateScene(*mScene));
+            // Update the rendering state, animate materials and drawables.
+            TRACE_CALL("Renderer::Update", mRenderer.Update(game_time, dt));
         }
 
         TRACE_CALL("Runtime::Update", mRuntime->Update(game_time, dt));
@@ -1011,10 +1043,13 @@ private:
     // Interface for accessing the game classes and resources
     // such as animations, materials etc.
     engine::ClassLibrary* mClasslib = nullptr;
-    // Game data/content loader.
-    engine::Loader* mGameDataLoader = nullptr;
+    // Engine data loader for the engine and the for
+    // the subsystems that don't have their own specific loader.
+    engine::Loader* mEngineDataLoader = nullptr;
     // audio stream loader
     audio::Loader* mAudioLoader = nullptr;
+    // Game data loader.
+    game::Loader* mGameLoader = nullptr;
     // The graphics painter device.
     std::unique_ptr<gfx::Painter> mPainter;
     // The graphics device.
@@ -1032,6 +1067,8 @@ private:
     std::unique_ptr<engine::GameRuntime> mRuntime;
     // Current game scene or nullptr if no scene.
     std::unique_ptr<game::Scene> mScene;
+    // Current tilemap or nullptr if no map.
+    std::unique_ptr<game::Tilemap> mTilemap;
     // The UI stack onto which UIs are opened.
     // The top of the stack is the currently "active" UI
     // that gets the mouse/keyboard input events. It's

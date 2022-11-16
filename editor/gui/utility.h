@@ -51,6 +51,46 @@
 namespace gui
 {
 
+class AutoHider  {
+public:
+    AutoHider(QWidget* widget)
+      : mWidget(widget)
+    {
+        QSignalBlocker s(mWidget);
+        mWidget->setVisible(true);
+    }
+   ~AutoHider()
+    {
+        QSignalBlocker s(mWidget);
+        mWidget->setVisible(false);
+    }
+
+    AutoHider(const AutoHider&) = delete;
+    AutoHider& operator=(const AutoHider&) = delete;
+private:
+    QWidget* mWidget = nullptr;
+};
+
+class AutoEnabler {
+public:
+    AutoEnabler(QWidget* widget)
+      : mWidget(widget)
+    {
+        QSignalBlocker s(widget);
+        widget->setEnabled(false);
+    }
+    ~AutoEnabler()
+    {
+        QSignalBlocker s(mWidget);
+        mWidget->setEnabled(true);
+    }
+    AutoEnabler(const AutoEnabler&) = delete;
+    AutoEnabler& operator=(const AutoEnabler&) = delete;
+private:
+    QWidget* mWidget = nullptr;
+
+};
+
 inline glm::vec4 ToVec4(const QPoint& point)
 { return glm::vec4(point.x(), point.y(), 1.0f, 1.0f); }
 inline glm::vec2 ToVec2(const QPoint& point)
@@ -78,6 +118,64 @@ inline gfx::FPoint ToGfx(const QPoint& p)
 inline QColor FromGfx(const gfx::Color4f& color)
 {
     return QColor::fromRgbF(color.Red(), color.Green(), color.Blue(), color.Alpha());
+}
+
+inline int Increment(QProgressBar* bar, int value = 1)
+{
+    QSignalBlocker s(bar);
+    int val = bar->value() + value;
+    bar->setValue(val);
+    return val;
+}
+
+inline void Increment(QSpinBox* spin, int value = 1)
+{
+    QSignalBlocker s(spin);
+    spin->setValue(spin->value() + value);
+}
+inline void Increment(QDoubleSpinBox* spin, float value = 1.0f)
+{
+    QSignalBlocker s(spin);
+    spin->setValue(spin->value() + value);
+}
+
+inline void Decrement(QSpinBox* spin, int value = 1.0)
+{
+    QSignalBlocker s(spin);
+    spin->setValue(spin->value() - value);
+}
+inline void Decrement(QDoubleSpinBox* spin, float value = 1.0f)
+{
+    QSignalBlocker s(spin);
+    spin->setValue(spin->value() - value);
+}
+
+inline QModelIndexList GetSelection(QTableView* view)
+{
+    return view->selectionModel()->selectedRows();
+}
+
+inline void SelectRow(QTableView* view, int row)
+{
+    QSignalBlocker s(view);
+    if (row == -1)
+        view->clearSelection();
+    else view->selectRow(row);
+}
+inline void SelectLastRow(QTableView* view)
+{
+    QSignalBlocker s(view);
+    const auto count = view->model()->rowCount();
+    view->selectRow(count-1);
+}
+inline void ClearSelection(QTableView* view)
+{
+    QSignalBlocker s(view);
+    view->clearSelection();
+}
+inline int GetCurrentRow(QTableView* view)
+{
+    return view->currentIndex().row();
 }
 
 inline void SetEnabled(QWidget* widget, bool enabled)
@@ -120,10 +218,34 @@ EnumT EnumFromCombo(const QComboBox* combo)
     return val.value();
 }
 
+inline void SetValue(QProgressBar* bar, int value)
+{
+    QSignalBlocker s(bar);
+    bar->setValue(value);
+}
+inline void SetValue(QProgressBar* bar, QString fmt)
+{
+    QSignalBlocker s(bar);
+    bar->setTextVisible(true);
+    bar->setFormat(fmt);
+}
+
 inline void SetValue(QAction* action, bool on_off)
 {
     QSignalBlocker s(action);
     action->setChecked(on_off);
+}
+
+inline void SetPlaceholderText(QComboBox* cmb, const QString& text)
+{
+    QSignalBlocker s(cmb);
+    cmb->setPlaceholderText(text);
+}
+
+inline void SetPlaceholderText(QLineEdit* edit, const QString& text)
+{
+    QSignalBlocker s(edit);
+    edit->setPlaceholderText(text);
 }
 
 inline void SetRange(QDoubleSpinBox* spin, double min, double max)
@@ -136,6 +258,12 @@ inline void SetRange(QSpinBox* spin, int min, int max)
 {
     QSignalBlocker s(spin);
     spin->setRange(min, max);
+}
+
+inline void SetRange(QProgressBar* bar, int min, int max)
+{
+    QSignalBlocker s(bar);
+    bar->setRange(min, max);
 }
 
 struct ListItemId {
@@ -169,7 +297,7 @@ void SetValue(QComboBox* combo, T value)
     SetValue(combo, app::toString(value));
 }
 
-inline void SetValue(QComboBox* combo, const ListItemId& id)
+inline bool SetValue(QComboBox* combo, const ListItemId& id)
 {
     QSignalBlocker s(combo);
     combo->setCurrentIndex(-1);
@@ -184,10 +312,11 @@ inline void SetValue(QComboBox* combo, const ListItemId& id)
             combo->setCurrentIndex(i);
             if (combo->isEditable())
                 combo->setEditText(combo->itemText(i));
-            return;
+            return true;
         }
     }
     combo->setCurrentIndex(-1);
+    return false;
 }
 
 inline void SetValue(QComboBox* combo, int index)
@@ -198,10 +327,18 @@ inline void SetValue(QComboBox* combo, int index)
         combo->clearEditText();
 }
 
-// type moved from from here to app/utility.h
+// type moved from here to app/utility.h
 // so that the workspace can also use this type.
-using ListItem = app::ListItem;
+using ResourceListItem = app::ResourceListItem;
+using ResourceList = app::ResourceList;
+using PropertyKey = app::PropertyKey;
+using Bytes = app::Bytes;
 
+struct ListItem {
+    QString name;
+    QString id;
+};
+using ItemList = std::vector<ListItem>;
 
 inline void ClearList(QListWidget* list)
 {
@@ -209,7 +346,7 @@ inline void ClearList(QListWidget* list)
     list->clear();
 }
 
-inline void SetList(QListWidget* list, const std::vector<ListItem>& items)
+inline void SetList(QListWidget* list, const ResourceList& items)
 {
     // maintain the current/previous selections
     std::unordered_set<QString> selected;
@@ -236,13 +373,14 @@ inline void SetList(QListWidget* list, const std::vector<ListItem>& items)
     }
 }
 
-inline void SetList(QComboBox* combo, const std::vector<ListItem>& items)
+template<typename Type>
+void SetList(QComboBox* combo, const std::vector<Type>& list)
 {
     QSignalBlocker s(combo);
     QString current = combo->currentData(Qt::UserRole).toString();
 
     combo->clear();
-    for (const auto& item : items)
+    for (const auto& item : list)
     {
         combo->addItem(item.name, item.id);
     }
@@ -260,6 +398,17 @@ inline void SetList(QComboBox* combo, const std::vector<ListItem>& items)
             return;
         }
     }
+}
+
+inline void SetIndex(QComboBox* combo, int index)
+{
+    QSignalBlocker s(combo);
+    combo->setCurrentIndex(index);
+}
+
+inline int GetIndex(QComboBox* combo)
+{
+    return combo->currentIndex();
 }
 
 inline void SetList(QComboBox* combo, const QStringList& items)
@@ -329,6 +478,13 @@ inline void SetValue(QLineEdit* line, double val)
 {
     QSignalBlocker s(line);
     line->setText(QString::number(val));
+    line->setCursorPosition(0);
+}
+
+inline void SetValue(QLineEdit* line, const app::Bytes& bytes)
+{
+    QSignalBlocker s(line);
+    line->setText(app::toString(bytes));
     line->setCursorPosition(0);
 }
 
@@ -750,121 +906,148 @@ inline void GetUIValue(QComboBox* cmb, QString* out)
 
 
 template<typename Resource>
-inline void SetProperty(Resource& res, const QString& name, const QComboBox* cmb)
-{ res.SetProperty(name, cmb->currentText()); }
+inline void SetProperty(Resource& res, const PropertyKey& key, const QComboBox* cmb)
+{ res.SetProperty(key, cmb->currentText()); }
 template<typename Resource>
-inline void SetProperty(Resource& res, const QString& name, const QLineEdit* edit)
-{ res.SetProperty(name, edit->text()); }
+inline void SetProperty(Resource& res, const PropertyKey& key, const QLineEdit* edit)
+{ res.SetProperty(key, edit->text()); }
 template<typename Resource>
-inline void SetProperty(Resource& res, const QString& name, const QDoubleSpinBox* spin)
-{ res.SetProperty(name, spin->value()); }
+inline void SetProperty(Resource& res, const PropertyKey& key, const QDoubleSpinBox* spin)
+{ res.SetProperty(key, spin->value()); }
 template<typename Resource>
-inline void SetProperty(Resource& res, const QString& name, const QSpinBox* spin)
-{ res.SetProperty(name, spin->value()); }
+inline void SetProperty(Resource& res, const PropertyKey& key, const QSpinBox* spin)
+{ res.SetProperty(key, spin->value()); }
 template<typename Resource>
-inline void SetProperty(Resource& res, const QString& name, const QCheckBox* chk)
-{ res.SetProperty(name, chk->isChecked()); }
+inline void SetProperty(Resource& res, const PropertyKey& key, const QCheckBox* chk)
+{ res.SetProperty(key, chk->isChecked()); }
 template<typename Resource>
-inline void SetProperty(Resource& res, const QString& name, const QGroupBox* chk)
-{ res.SetProperty(name, chk->isChecked()); }
+inline void SetProperty(Resource& res, const PropertyKey& key, const QGroupBox* chk)
+{ res.SetProperty(key, chk->isChecked()); }
 template<typename Resource>
-inline void SetProperty(Resource& res, const QString& name, const color_widgets::ColorSelector* color)
-{ res.SetProperty(name, color->color()); }
+inline void SetProperty(Resource& res, const PropertyKey& key, const color_widgets::ColorSelector* color)
+{ res.SetProperty(key, color->color()); }
 template<typename Resource>
-inline void SetProperty(Resource& res, const QString& name, const QString& value)
-{ res.SetProperty(name, value); }
+inline void SetProperty(Resource& res, const PropertyKey& key, const QString& value)
+{ res.SetProperty(key, value); }
 template<typename Resource>
-inline void SetProperty(Resource& res, const QString& name, const QByteArray& value)
-{ res.SetProperty(name, value); }
+inline void SetProperty(Resource& res, const PropertyKey& key, const QJsonObject& json)
+{ res.SetProperty(key, json); }
 template<typename Resource>
-inline void SetProperty(Resource& res, const QString& name, const QColor& value)
-{ res.SetProperty(name, value); }
+inline void SetProperty(Resource& res, const PropertyKey& key, const QByteArray& value)
+{ res.SetProperty(key, value); }
 template<typename Resource>
-inline void SetProperty(Resource& res, const QString& name, const QVariantMap& map)
-{ res.SetProperty(name, map); }
+inline void SetProperty(Resource& res, const PropertyKey& key, const QColor& value)
+{ res.SetProperty(key, value); }
 template<typename Resource>
-inline void SetProperty(Resource& res, const QString& name, int value)
-{ res.SetProperty(name, value); }
+inline void SetProperty(Resource& res, const PropertyKey& key, const QVariantMap& map)
+{ res.SetProperty(key, map); }
 template<typename Resource>
-inline void SetProperty(Resource& res, const QString& name, unsigned value)
-{ res.SetProperty(name, value); }
+inline void SetProperty(Resource& res, const PropertyKey& key, int value)
+{ res.SetProperty(key, value); }
 template<typename Resource>
-inline void SetProperty(Resource& res, const QString& name, float value)
-{ res.SetProperty(name, value); }
+inline void SetProperty(Resource& res, const PropertyKey& key, unsigned value)
+{ res.SetProperty(key, value); }
 template<typename Resource>
-inline void SetProperty(Resource& res, const QString& name, double value)
-{ res.SetProperty(name, value); }
+inline void SetProperty(Resource& res, const PropertyKey& key, float value)
+{ res.SetProperty(key, value); }
 template<typename Resource>
-inline void SetProperty(Resource& res, const QString& name, quint64 value)
-{ res.SetProperty(name, value); }
+inline void SetProperty(Resource& res, const PropertyKey& key, double value)
+{ res.SetProperty(key, value); }
+template<typename Resource>
+inline void SetProperty(Resource& res, const PropertyKey& key, quint64 value)
+{ res.SetProperty(key, value); }
+template<typename Resource>
+inline void SetProperty(Resource& res, const PropertyKey& key, const std::string& value)
+{ res.SetProperty(key, value); }
+
+#if !defined(__MSVC__)
+// this overload cannot happen on 64bit MSVC build because size_t is unsigned __int64 which
+// is the same as quint64
+template<typename Resource>
+inline void SetProperty(Resource& res, const PropertyKey& key, size_t value)
+{ res.SetProperty(key, quint64(value)); }
+#endif
 
 // user properties.
 template<typename Resource>
-inline void SetUserProperty(Resource& res, const QString& name, const QSplitter* splitter)
-{ res.SetUserProperty(name, splitter->saveState()); }
+inline void SetUserProperty(Resource& res, const PropertyKey& key, const QSplitter* splitter)
+{ res.SetUserProperty(key, splitter->saveState()); }
 template<typename Resource>
-inline void SetUserProperty(Resource& res, const QString& name, const QComboBox* cmb)
-{ res.SetUserProperty(name, cmb->currentText()); }
+inline void SetUserProperty(Resource& res, const PropertyKey& key, const QComboBox* cmb)
+{ res.SetUserProperty(key, cmb->currentText()); }
 template<typename Resource>
-inline void SetUserProperty(Resource& res, const QString& name, const QLineEdit* edit)
-{ res.SetUserProperty(name, edit->text()); }
+inline void SetUserProperty(Resource& res, const PropertyKey& key, const QLineEdit* edit)
+{ res.SetUserProperty(key, edit->text()); }
 template<typename Resource>
-inline void SetUserProperty(Resource& res, const QString& name, const QDoubleSpinBox* spin)
-{ res.SetUserProperty(name, spin->value()); }
+inline void SetUserProperty(Resource& res, const PropertyKey& key, const QDoubleSpinBox* spin)
+{ res.SetUserProperty(key, spin->value()); }
 template<typename Resource>
-inline void SetUserProperty(Resource& res, const QString& name, const QSpinBox* spin)
-{ res.SetUserProperty(name, spin->value()); }
+inline void SetUserProperty(Resource& res, const PropertyKey& key, const QSpinBox* spin)
+{ res.SetUserProperty(key, spin->value()); }
 template<typename Resource>
-inline void SetUserProperty(Resource& res, const QString& name, const QCheckBox* chk)
-{ res.SetUserProperty(name, chk->isChecked()); }
+inline void SetUserProperty(Resource& res, const PropertyKey& key, const QCheckBox* chk)
+{ res.SetUserProperty(key, chk->isChecked()); }
 template<typename Resource>
-inline void SetUserProperty(Resource& res, const QString& name, const QGroupBox* chk)
-{ res.SetUserProperty(name, chk->isChecked()); }
+inline void SetUserProperty(Resource& res, const PropertyKey& key, const QGroupBox* chk)
+{ res.SetUserProperty(key, chk->isChecked()); }
 template<typename Resource>
-inline void SetUserProperty(Resource& res, const QString& name, const color_widgets::ColorSelector* color)
-{ res.SetUserProperty(name, color->color()); }
+inline void SetUserProperty(Resource& res, const PropertyKey& key, const color_widgets::ColorSelector* color)
+{ res.SetUserProperty(key, color->color()); }
 template<typename Resource>
-inline void SetUserProperty(Resource& res, const QString& name, const gui::GfxWidget* widget)
+inline void SetUserProperty(Resource& res, const PropertyKey& key, const gui::GfxWidget* widget)
 {
     if (const auto* color = widget->GetClearColor())
-        res.SetUserProperty(name + "_clear_color", FromGfx(*color));
+        res.SetUserProperty(key + "_clear_color", FromGfx(*color));
 }
 template<typename Resource>
-inline void SetUserProperty(Resource& res, const QString& name, const QString& value)
-{ res.SetUserProperty(name, value); }
+inline void SetUserProperty(Resource& res, const PropertyKey& key, const QString& value)
+{ res.SetUserProperty(key, value); }
 template<typename Resource>
-inline void SetUserProperty(Resource& res, const QString& name, const QByteArray& value)
-{ res.SetUserProperty(name, value); }
+inline void SetUserProperty(Resource& res, const PropertyKey& key, const QJsonObject& json)
+{ res.SetUserProperty(key, json); }
 template<typename Resource>
-inline void SetUserProperty(Resource& res, const QString& name, const QVariantMap& map)
-{ res.SetUserProperty(name, map); }
+inline void SetUserProperty(Resource& res, const PropertyKey& key, const QByteArray& value)
+{ res.SetUserProperty(key, value); }
 template<typename Resource>
-inline void SetUserProperty(Resource& res, const QString& name, const QColor& value)
-{ res.SetUserProperty(name, value); }
+inline void SetUserProperty(Resource& res, const PropertyKey& key, const QVariantMap& map)
+{ res.SetUserProperty(key, map); }
 template<typename Resource>
-inline void SetUserProperty(Resource& res, const QString& name, int value)
-{ res.SetUserProperty(name, value); }
+inline void SetUserProperty(Resource& res, const PropertyKey& key, const QColor& value)
+{ res.SetUserProperty(key, value); }
 template<typename Resource>
-inline void SetUserProperty(Resource& res, const QString& name, unsigned value)
-{ res.SetUserProperty(name, value); }
+inline void SetUserProperty(Resource& res, const PropertyKey& key, int value)
+{ res.SetUserProperty(key, value); }
 template<typename Resource>
-inline void SetUserProperty(Resource& res, const QString& name, float value)
-{ res.SetUserProperty(name, value); }
+inline void SetUserProperty(Resource& res, const PropertyKey& key, unsigned value)
+{ res.SetUserProperty(key, value); }
 template<typename Resource>
-inline void SetUserProperty(Resource& res, const QString& name, double value)
-{ res.SetUserProperty(name, value); }
+inline void SetUserProperty(Resource& res, const PropertyKey& key, float value)
+{ res.SetUserProperty(key, value); }
 template<typename Resource>
-inline void SetUserProperty(Resource& res, const QString& name, quint64 value)
-{ res.SetUserProperty(name, value); }
+inline void SetUserProperty(Resource& res, const PropertyKey& key, double value)
+{ res.SetUserProperty(key, value); }
+template<typename Resource>
+inline void SetUserProperty(Resource& res, const PropertyKey& key, quint64 value)
+{ res.SetUserProperty(key, value); }
+template<typename Resource>
+inline void SetUserProperty(Resource& res, const PropertyKey& key, const std::string& value)
+{ res.SetUserProperty(key, value); }
 
+#if !defined(__MSVC__)
+// this overload cannot happen on 64bit MSVC build because size_t is unsigned __int64 which
+// is the same as quint64
+template<typename Resource>
+inline void SetUserProperty(Resource& res, const PropertyKey& key, size_t value)
+{ res.SetUserProperty(key, quint64(value)); }
+#endif
 
 template<typename Resource, typename T> inline
-bool GetProperty(const Resource& res, const QString& name, T* out)
+bool GetProperty(const Resource& res, const PropertyKey& key, T* out)
 {
-    return res.GetProperty(name, out);
+    return res.GetProperty(key, out);
 }
 template<typename Resource>
-inline void GetProperty(const Resource& res, const QString& name, QComboBox* cmb)
+inline void GetProperty(const Resource& res, const PropertyKey& key, QComboBox* cmb)
 {
     QSignalBlocker s(cmb);
 
@@ -875,7 +1058,7 @@ inline void GetProperty(const Resource& res, const QString& name, QComboBox* cmb
     //cmb->setCurrentIndex(0);
 
     QString text;
-    if (res.GetProperty(name, &text))
+    if (res.GetProperty(key, &text))
     {
         const auto index = cmb->findText(text);
         if (index != -1)
@@ -883,74 +1066,90 @@ inline void GetProperty(const Resource& res, const QString& name, QComboBox* cmb
     }
 }
 template<typename Resource>
-inline void GetProperty(const Resource& res, const QString& name, QLineEdit* edit)
+inline void GetProperty(const Resource& res, const PropertyKey& key, QLineEdit* edit)
 {
     QSignalBlocker s(edit);
 
     QString text;
-    if (res.GetProperty(name, &text))
+    if (res.GetProperty(key, &text))
         edit->setText(text);
 }
 template<typename Resource>
-inline void GetProperty(const Resource& res, const QString& name, QDoubleSpinBox* spin)
+inline void GetProperty(const Resource& res, const PropertyKey& key, QDoubleSpinBox* spin)
 {
     QSignalBlocker s(spin);
 
     double value = 0.0f;
-    if (res.GetProperty(name, &value))
+    if (res.GetProperty(key, &value))
         spin->setValue(value);
 
 }
 template<typename Resource>
-inline void GetProperty(const Resource& res, const QString& name, QSpinBox* spin)
+inline void GetProperty(const Resource& res, const PropertyKey& key, QSpinBox* spin)
 {
     QSignalBlocker s(spin);
 
     int value = 0;
-    if (res.GetProperty(name, &value))
+    if (res.GetProperty(key, &value))
         spin->setValue(value);
 }
 template<typename Resource>
-inline void GetProperty(const Resource& res, const QString& name, QCheckBox* chk)
+inline void GetProperty(const Resource& res, const PropertyKey& key, QCheckBox* chk)
 {
     QSignalBlocker s(chk);
 
     bool value = false;
-    if (res.GetProperty(name, &value))
+    if (res.GetProperty(key, &value))
         chk->setChecked(value);
 }
 template<typename Resource>
-inline void GetProperty(const Resource& res, const QString& name, QGroupBox* chk)
+inline void GetProperty(const Resource& res, const PropertyKey& key, QGroupBox* chk)
 {
     QSignalBlocker s(chk);
 
     bool value = false;
-    if (res.GetProperty(name, &value))
+    if (res.GetProperty(key, &value))
         chk->setChecked(value);
 }
 template<typename Resource>
-inline void GetProperty(const Resource& res, const QString& name, color_widgets::ColorSelector* color)
+inline void GetProperty(const Resource& res, const PropertyKey& key, color_widgets::ColorSelector* color)
 {
     QSignalBlocker s(color);
 
     QColor value;
-    if (res.GetProperty(name, &value))
+    if (res.GetProperty(key, &value))
         color->setColor(value);
 }
-
-
-template<typename Resource, typename T> inline
-bool GetUserProperty(const Resource& res, const QString& name, T* out)
+template<typename Resource>
+inline void GetProperty(const Resource& res, const PropertyKey& key, std::string* str)
 {
-    return res.GetUserProperty(name, out);
+    *str = res.GetProperty(key, std::string(""));
 }
 
 template<typename Resource>
-inline bool GetUserProperty(const Resource& res, const QString& name, QSplitter* splitter)
+inline void GetProperty(const Resource& res, const PropertyKey& key, size_t* value)
+{
+    *value = res.GetProperty(key, quint64(0));
+}
+
+template<typename Resource>
+inline void GetUserProperty(const Resource& res, const PropertyKey& key, size_t* value)
+{
+    *value = res.GetUserProperty(key, quint64(0));
+}
+
+template<typename Resource, typename T> inline
+bool GetUserProperty(const Resource& res, const PropertyKey& key, T* out)
+{
+    return res.GetUserProperty(key, out);
+}
+
+template<typename Resource>
+inline bool GetUserProperty(const Resource& res, const PropertyKey& key, QSplitter* splitter)
 {
     QSignalBlocker s(splitter);
     QByteArray state;
-    if (res.GetUserProperty(name, &state))
+    if (res.GetUserProperty(key, &state))
     {
         splitter->restoreState(state);
         return true;
@@ -959,7 +1158,7 @@ inline bool GetUserProperty(const Resource& res, const QString& name, QSplitter*
 }
 
 template<typename Resource>
-inline bool GetUserProperty(const Resource& res, const QString& name, QComboBox* cmb)
+inline bool GetUserProperty(const Resource& res, const PropertyKey& key, QComboBox* cmb)
 {
     QSignalBlocker s(cmb);
 
@@ -969,7 +1168,7 @@ inline bool GetUserProperty(const Resource& res, const QString& name, QComboBox*
     // resource names and the resource has been deleted)
     //cmb->setCurrentIndex(0);
     QString text;
-    if (res.GetUserProperty(name, &text))
+    if (res.GetUserProperty(key, &text))
     {
         const auto index = cmb->findText(text);
         if (index != -1)
@@ -979,12 +1178,12 @@ inline bool GetUserProperty(const Resource& res, const QString& name, QComboBox*
     return false;
 }
 template<typename Resource>
-inline bool GetUserProperty(const Resource& res, const QString& name, QLineEdit* edit)
+inline bool GetUserProperty(const Resource& res, const PropertyKey& key, QLineEdit* edit)
 {
     QSignalBlocker s(edit);
 
     QString text;
-    if (res.GetUserProperty(name, &text))
+    if (res.GetUserProperty(key, &text))
     {
         edit->setText(text);
         return true;
@@ -992,12 +1191,12 @@ inline bool GetUserProperty(const Resource& res, const QString& name, QLineEdit*
     return false;
 }
 template<typename Resource>
-inline bool GetUserProperty(const Resource& res, const QString& name, QDoubleSpinBox* spin)
+inline bool GetUserProperty(const Resource& res, const PropertyKey& key, QDoubleSpinBox* spin)
 {
     QSignalBlocker s(spin);
 
     double value = 0.0f;
-    if (res.GetUserProperty(name, &value))
+    if (res.GetUserProperty(key, &value))
     {
         spin->setValue(value);
         return true;
@@ -1005,12 +1204,12 @@ inline bool GetUserProperty(const Resource& res, const QString& name, QDoubleSpi
     return false;
 }
 template<typename Resource>
-inline bool GetUserProperty(const Resource& res, const QString& name, QSpinBox* spin)
+inline bool GetUserProperty(const Resource& res, const PropertyKey& key, QSpinBox* spin)
 {
     QSignalBlocker s(spin);
 
     int value = 0;
-    if (res.GetUserProperty(name, &value))
+    if (res.GetUserProperty(key, &value))
     {
         spin->setValue(value);
         return true;
@@ -1018,12 +1217,12 @@ inline bool GetUserProperty(const Resource& res, const QString& name, QSpinBox* 
     return false;
 }
 template<typename Resource>
-inline bool GetUserProperty(const Resource& res, const QString& name, QCheckBox* chk)
+inline bool GetUserProperty(const Resource& res, const PropertyKey& key, QCheckBox* chk)
 {
     QSignalBlocker s(chk);
 
     bool value = false;
-    if (res.GetUserProperty(name, &value))
+    if (res.GetUserProperty(key, &value))
     {
         chk->setChecked(value);
         return true;
@@ -1031,12 +1230,12 @@ inline bool GetUserProperty(const Resource& res, const QString& name, QCheckBox*
     return false;
 }
 template<typename Resource>
-inline bool GetUserProperty(const Resource& res, const QString& name, QGroupBox* chk)
+inline bool GetUserProperty(const Resource& res, const PropertyKey& key, QGroupBox* chk)
 {
     QSignalBlocker s(chk);
 
     bool value = false;
-    if (res.GetUserProperty(name, &value))
+    if (res.GetUserProperty(key, &value))
     {
         chk->setChecked(value);
         return true;
@@ -1044,12 +1243,12 @@ inline bool GetUserProperty(const Resource& res, const QString& name, QGroupBox*
     return false;
 }
 template<typename Resource>
-inline bool GetUserProperty(const Resource& res, const QString& name, color_widgets::ColorSelector* color)
+inline bool GetUserProperty(const Resource& res, const PropertyKey& key, color_widgets::ColorSelector* color)
 {
     QSignalBlocker s(color);
 
     QColor value;
-    if (res.GetUserProperty(name, &value))
+    if (res.GetUserProperty(key, &value))
     {
         color->setColor(value);
         return true;
@@ -1058,10 +1257,10 @@ inline bool GetUserProperty(const Resource& res, const QString& name, color_widg
 }
 
 template<typename Resource>
-inline bool GetUserProperty(const Resource& res, const QString& name, gui::GfxWidget* widget)
+inline bool GetUserProperty(const Resource& res, const PropertyKey& key, gui::GfxWidget* widget)
 {
     QColor color;
-    if (res.GetUserProperty(name + "_clear_color", &color))
+    if (res.GetUserProperty(key + "_clear_color", &color))
     {
         QSignalBlocker s(widget);
         widget->SetClearColor(ToGfx(color));
@@ -1108,6 +1307,26 @@ inline bool MustHaveNumber(QComboBox* box)
     str.toInt(&ok);
     return ok;
 }
+
+template<typename UI, typename State>
+void MakeViewTransform(const UI& ui, const State& state, gfx::Transform& view)
+{
+    view.Scale(GetValue(ui.scaleX), GetValue(ui.scaleY));
+    view.Scale(GetValue(ui.zoom), GetValue(ui.zoom));
+    view.Rotate(qDegreesToRadians(ui.rotation->value()));
+    view.Translate(state.camera_offset_x, state.camera_offset_y);
+}
+
+template<typename UI, typename State>
+void MakeViewTransform(const UI& ui, const State& state, gfx::Transform& view, float rotation)
+{
+    view.Scale(GetValue(ui.scaleX), GetValue(ui.scaleY));
+    view.Scale(GetValue(ui.zoom), GetValue(ui.zoom));
+    view.Rotate(qDegreesToRadians(rotation));
+    view.Translate(state.camera_offset_x, state.camera_offset_y);
+}
+
+QPixmap ToGrayscale(QPixmap pixmap);
 
 // List the font's installed with the application.
 // returns a list of font uris, i.e. app://fonts/foo.otf

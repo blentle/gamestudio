@@ -70,6 +70,7 @@ void unit_test_node()
     node.SetScale(glm::vec2(4.0f, 5.0f));
     node.SetRotation(1.5f);
     node.SetEntityId("entity");
+    node.SetTag("tag tag");
 
     // to/from json
     {
@@ -78,6 +79,8 @@ void unit_test_node()
         auto ret = game::SceneNodeClass::FromJson(json);
         TEST_REQUIRE(ret.has_value());
         TEST_REQUIRE(ret->GetName()         == "root");
+        TEST_REQUIRE(ret->HasTag());
+        TEST_REQUIRE(*ret->GetTag()         == "tag tag");
         TEST_REQUIRE(ret->GetTranslation()  == glm::vec2(150.0f, -150.0f));
         TEST_REQUIRE(ret->GetScale()        == glm::vec2(4.0f, 5.0f));
         TEST_REQUIRE(ret->GetRotation()     == real::float32(1.5f));
@@ -101,6 +104,7 @@ void unit_test_node()
         TEST_REQUIRE(clone.GetHash() != node.GetHash());
         TEST_REQUIRE(clone.GetId() != node.GetId());
         TEST_REQUIRE(clone.GetName()         == "root");
+        TEST_REQUIRE(*clone.GetTag()         == "tag tag");
         TEST_REQUIRE(clone.GetTranslation()  == glm::vec2(150.0f, -150.0f));
         TEST_REQUIRE(clone.GetScale()        == glm::vec2(4.0f, 5.0f));
         TEST_REQUIRE(clone.GetRotation()     == real::float32(1.5f));
@@ -126,6 +130,7 @@ void unit_test_scene_class()
 
     game::SceneClass klass;
     klass.SetName("my scene");
+    klass.SetTilemapId("map123");
     klass.SetScriptFileId("script.lua");
     klass.SetDynamicSpatialIndex(game::SceneClass::SpatialIndex::QuadTree);
     klass.SetDynamicSpatialIndexArgs(quadtree);
@@ -221,6 +226,7 @@ void unit_test_scene_class()
         auto ret = game::SceneClass::FromJson(json);
         TEST_REQUIRE(ret.has_value());
         TEST_REQUIRE(ret->GetName() == "my scene");
+        TEST_REQUIRE(ret->GetTilemapId() == "map123");
         TEST_REQUIRE(ret->GetScriptFileId() == "script.lua");
         TEST_REQUIRE(ret->GetNode(0).GetName() == "root");
         TEST_REQUIRE(ret->GetNode(1).GetName() == "child_1");

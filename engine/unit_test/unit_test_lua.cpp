@@ -38,7 +38,7 @@
 // needs to be tested. Other key point is to test the basic functionality
 // just to make sure that there are no unexpected sol2 snags/bugs.
 
-class TestData : public engine::GameData {
+class TestData : public engine::EngineData {
 public:
     TestData(const std::string& file) : mName(file)
     { mData = base::LoadBinaryFile(file); }
@@ -55,13 +55,21 @@ private:
 
 class TestLoader : public engine::Loader {
 public:
-    GameDataHandle LoadGameData(const std::string& uri) const override
+    EngineDataHandle LoadEngineDataUri(const std::string& uri) const override
     { return nullptr; }
-    GameDataHandle LoadGameDataFromFile(const std::string& filename) const override
+    EngineDataHandle LoadEngineDataFile(const std::string& filename) const override
     {
         if (base::StartsWith(filename, "this-file-doesnt-exist"))
             return nullptr;
         return std::make_shared<TestData>(filename);
+    }
+    EngineDataHandle LoadEngineDataId(const std::string& id) const override
+    {
+        if (base::StartsWith(id, "this-file-doesnt-exist"))
+            return nullptr;
+        if (base::EndsWith(id, ".lua"))
+            return std::make_shared<TestData>(id);
+        return std::make_shared<TestData>(id + ".lua");
     }
 };
 

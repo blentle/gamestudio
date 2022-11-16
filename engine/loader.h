@@ -20,10 +20,12 @@
 
 #include <memory>
 
+#include "data/fwd.h"
 #include "engine/classlib.h"
 #include "engine/data.h"
 #include "audio/loader.h"
 #include "graphics/loader.h"
+#include "game/loader.h"
 
 namespace engine
 {
@@ -34,36 +36,45 @@ namespace engine
     // those deps in any case. This means that GameMain doesn't need to
     // link against all the various libs such as GfxLib, AudioLib etc.
 
-    class GameData;
-    using GameDataHandle = std::shared_ptr<const GameData>;
+    class EngineData;
+    using EngineDataHandle = std::shared_ptr<const EngineData>;
 
-    // Interface for accessing game objects' data packaged with the game.
+    // Interface for letting the engine load data associated and
+    // packaged with the game resources. This includes data such
+    // as UI style JSON files, entity/scene Lua script files etc.
     class Loader
     {
     public:
-        using GameDataHandle = engine::GameDataHandle;
+        using EngineDataHandle = engine::EngineDataHandle;
 
         virtual ~Loader() = default;
-        // Load game data based on a URI. The URI undergoes a resolution
+        // Load engine data based on a URI. The URI undergoes a resolution
         // and the content may be loaded from a resource pack etc.
         // Returns a null handle if no such data could be loaded.
-        virtual GameDataHandle LoadGameData(const std::string& uri) const = 0;
-        // Load game data from a file on the file system.
+        virtual EngineDataHandle LoadEngineDataUri(const std::string& uri) const = 0;
+        // Load engine data from a file on the file system.
         // Returns a null handle if no such data could be loaded.
-        virtual GameDataHandle LoadGameDataFromFile(const std::string& filename) const = 0;
+        virtual EngineDataHandle LoadEngineDataFile(const std::string& filename) const = 0;
+        // Load engine data based on a data object ID.
+        // Returns a null handle if no such data could be loaded.
+        virtual EngineDataHandle LoadEngineDataId(const std::string& id) const = 0;
     };
 
     // Loader implementation for loading all kinds of subsystem
     // resources and game data.
     class FileResourceLoader : public gfx::Loader,
                                public engine::Loader,
-                               public audio::Loader
+                               public audio::Loader,
+                               public game::Loader
     {
     public:
         enum class DefaultAudioIOStrategy {
             Automatic, Memmap, Stream, Buffer
         };
 
+        // Load the meta information how to load some particular types of
+        // data objects based on the content.json file.
+        virtual bool LoadResourceLoadingInfo(const data::Reader& data) = 0;
         // Set the default IO strategy for loading audio data.
         virtual void SetDefaultAudioIOStrategy(DefaultAudioIOStrategy strategy) = 0;
         // Set the filesystem path of the current running binary on the file system.
@@ -88,9 +99,11 @@ namespace engine
         // In general no validation is done regarding the completeness of th
         // loaded content. I.e. it's possible that classes refer to
         // resources (i.e. other classes) that aren't available.
-        virtual bool LoadFromFile(const std::string& file) = 0;
+        virtual bool LoadClasses(const data::Reader& data) = 0;
         // create new content loader.
         static std::unique_ptr<JsonFileClassLoader> Create();
+        // helper
+        bool LoadClassesFromFile(const std::string& file);
     private:
     };
 } // namespace

@@ -27,10 +27,12 @@
 #  include <QObject>
 #  include <QVariant>
 #  include <glm/glm.hpp>
+#  include <quazip/quazip.h>
 #include "warnpop.h"
 
 #include <memory>
 #include <vector>
+#include <set>
 
 #include "base/assert.h"
 #include "audio/loader.h"
@@ -41,11 +43,53 @@
 #include "graphics/device.h"
 #include "engine/classlib.h"
 #include "engine/loader.h"
+#include "game/loader.h"
 #include "resource.h"
 #include "utility.h"
 
+class QuaZip;
+
 namespace app
 {
+    class ResourceArchive
+    {
+    public:
+        ResourceArchive();
+
+        bool Open(const QString& zip_file);
+
+        bool ReadFile(const QString& file, QByteArray* array) const;
+
+        void SetImportSubFolderName(const QString& name)
+        { mSubFolderName = name; }
+        void SetResourceNamePrefix(const QString& prefix)
+        { mNamePrefix = prefix; }
+        QString GetImportSubFolderName() const
+        { return mSubFolderName; }
+        QString GetResourceNamePrefix() const
+        { return mNamePrefix; }
+
+        size_t GetNumResources() const
+        { return mResources.size(); }
+        const Resource& GetResource(size_t index) const
+        { return *base::SafeIndex(mResources, index); }
+        void IgnoreResource(size_t index)
+        { mIgnoreSet.insert(index); }
+        bool IsIndexIgnored(size_t index) const
+        { return base::Contains(mIgnoreSet, index); }
+    private:
+        bool FindZipFile(const QString& unix_style_name) const;
+    private:
+        friend class Workspace;
+        QString mZipFile;
+        QString mSubFolderName;
+        QString mNamePrefix;
+        QFile mFile;
+        mutable QuaZip mZip;
+        std::vector<std::unique_ptr<Resource>> mResources;
+        std::set<size_t> mIgnoreSet;
+    };
+
     // Workspace groups together a collection of resources
     // that user can edit and work with such as materials,
     // animations and particle engines. Each resource has
@@ -60,7 +104,8 @@ namespace app
                       public engine::ClassLibrary,
                       public engine::Loader,
                       public gfx::Loader,
-                      public audio::Loader
+                      public audio::Loader,
+                      public game::Loader
 
     {
         Q_OBJECT
@@ -91,14 +136,18 @@ namespace app
         virtual engine::ClassHandle<const game::EntityClass> FindEntityClassById(const std::string& id) const override;
         virtual engine::ClassHandle<const game::SceneClass> FindSceneClassByName(const std::string& name) const override;
         virtual engine::ClassHandle<const game::SceneClass> FindSceneClassById(const std::string& id) const override;
-        // game::GameDataLoader implementation.
-        virtual engine::GameDataHandle LoadGameData(const std::string& URI) const override;
-        virtual engine::GameDataHandle LoadGameDataFromFile(const std::string& filename) const override;
+        virtual engine::ClassHandle<const game::TilemapClass> FindTilemapClassById(const std::string& id) const override;
+        // engine::EngineDataLoader implementation.
+        virtual engine::EngineDataHandle LoadEngineDataUri(const std::string& URI) const override;
+        virtual engine::EngineDataHandle LoadEngineDataFile(const std::string& filename) const override;
+        virtual engine::EngineDataHandle LoadEngineDataId(const std::string& id) const override;
         // gfx::ResourceLoader implementation
         virtual gfx::ResourceHandle LoadResource(const std::string& URI) override;
         // audio::Loader implementation
         virtual audio::SourceStreamHandle OpenAudioStream(const std::string& URI,
             AudioIOStrategy strategy, bool enable_file_caching) const override;
+        // game::Loader implementation
+        virtual game::TilemapDataHandle LoadTilemapData(const game::Loader::TilemapDataDesc& desc) const override;
 
         template<typename T>
         engine::ClassHandle<T> FindClassHandleByName(const std::string& name, Resource::Type type) const
@@ -139,6 +188,8 @@ namespace app
         std::shared_ptr<const gfx::DrawableClass> GetDrawableClassById(const QString& id) const;
         std::shared_ptr<const game::EntityClass> GetEntityClassByName(const QString& name) const;
         std::shared_ptr<const game::EntityClass> GetEntityClassById(const QString& id) const;
+        std::shared_ptr<const game::TilemapClass> GetTilemapClassById(const QString& id) const;
+        std::shared_ptr<const game::TilemapClass> GetTilemapClassById(const std::string& id) const;
 
         // Try to load the contents of the workspace from the current workspace dir.
         // Returns true on success. Any errors are logged.
@@ -160,14 +211,17 @@ namespace app
         // the workspace.
         void SaveResource(const Resource& resource);
 
-        // Get human readable name for the workspace.
+        // Get human-readable name for the workspace.
         QString GetName() const;
         // Get current workspace directory
-        QString GetDir() const
-        { return mWorkspaceDir; }
+        QString GetDir() const;
+        // Get a directory within the workspace, for example
+        // data/ or lua/
+        QString GetSubDir(const QString& dir, bool create = true) const;
 
-        using ResourceList = std::vector<ListItem>;
-
+        using ResourceList = app::ResourceList;
+        // Get a list of user defined tile map resources.
+        ResourceList ListUserDefinedMaps() const;
         // Get a list of user defined script resources.
         ResourceList ListUserDefinedScripts() const;
         // Get a list of user defined material names in the workspace.
@@ -193,11 +247,18 @@ namespace app
 
         ResourceList ListCursors() const;
 
-        // Map material id to its human readable name.
+        ResourceList ListDataFiles() const;
+
+        // List user defined resource dependencies.
+        ResourceList ListDependencies(const QModelIndexList& list) const;
+        ResourceList ListDependencies(std::vector<size_t> indices) const;
+        ResourceList ListDependencies(std::size_t index) const;
+
+        // Map material ID to its human-readable name.
         QString MapMaterialIdToName(const QString& id) const;
         QString MapMaterialIdToName(const std::string& id) const
         { return MapMaterialIdToName(FromUtf8(id)); }
-        // Map drawable id to its human readable name.
+        // Map drawable ID to its human-readable name.
         QString MapDrawableIdToName(const QString& id) const;
         QString MapDrawableIdToName(const std::string& id) const
         { return MapDrawableIdToName(FromUtf8(id)); }
@@ -223,6 +284,13 @@ namespace app
         bool IsValidScript(const QString& id) const;
         bool IsValidScript(const std::string& id) const
         { return IsValidScript(FromUtf8(id)); }
+
+        bool IsValidTilemap(const QString& id) const;
+        bool IsValidTilemap(const std::string& id) const
+        { return IsValidTilemap(FromUtf8(id)); }
+
+        bool IsUserDefinedResource(const QString& id) const;
+        bool IsUserDefinedResource(const std::string& id) const;
 
         // Get the Qt data model implementation for2 displaying the
         // workspace resources in a Qt widget (table widget)
@@ -270,16 +338,18 @@ namespace app
         void DeleteResources(const QModelIndexList& list);
         void DeleteResources(std::vector<size_t> indices);
         void DeleteResource(size_t index);
+        void DeleteResource(const std::string& id);
+        void DeleteResource(const QString& id);
         // Create duplicate copies of the selected resources.
         void DuplicateResources(const QModelIndexList& list);
         void DuplicateResources(std::vector<size_t> indices);
         void DuplicateResource(size_t index);
 
-        bool ExportResources(const QModelIndexList& list, const QString& filename) const;
-        bool ExportResources(const std::vector<size_t>& indices, const QString& filename) const;
+        bool ExportResourceJson(const QModelIndexList& list, const QString& filename) const;
+        bool ExportResourceJson(const std::vector<size_t>& indices, const QString& filename) const;
 
         static
-        bool ImportResources(const QString& filename, std::vector<std::unique_ptr<Resource>>& resources);
+        bool ImportResourcesFromJson(const QString& filename, std::vector<std::unique_ptr<Resource>>& resources);
 
         // Import and create new resource based on a file.
         // Currently supports creating material resources out of
@@ -584,6 +654,13 @@ namespace app
         void SetProjectId(const QString& id)
         { mSettings.application_identifier = id; }
 
+        struct ExportOptions {
+            QString zip_file;
+        };
+        bool ExportResourceArchive(const std::vector<const Resource*>& resources, const ExportOptions& options);
+
+        bool ImportResourceArchive(ResourceArchive& zip);
+
         struct ContentPackingOptions {
             // the output directory into which place the packed content.
             QString directory;
@@ -632,15 +709,16 @@ namespace app
             QString emsdk_path;
         };
 
-        // Pack the selected resources into a deployable "package".
+        // Build the selected resources into a deployable release "package", that
+        // can be redistributed to the end users.
         // This includes copying the resource files such as fonts, textures and shaders
         // and also building content packages such as texture atlas(ses).
-        // The directory in which the output is to be placed will have it's
+        // The directory in which the output is to be placed will have its
         // previous contents OVERWRITTEN.
         // Returns true if everything went smoothly, otherwise false
         // and the package process might have failed in some way.
         // Errors/warnings encountered during the process will be logged.
-        bool PackContent(const std::vector<const Resource*>& resources, const ContentPackingOptions& options);
+        bool BuildReleasePackage(const std::vector<const Resource*>& resources, const ContentPackingOptions& options);
 
     public slots:
         // Save or update a resource in the workspace. If the resource by the same type
@@ -670,9 +748,9 @@ namespace app
         // signal handler returns the pointer is no longer valid!
         void ResourceToBeDeleted(const Resource* resource);
 
-        // This signal is emitted intermittedly during  the
-        // execution of PackContent.
-        // Action is the name of the current action (human readable)
+        // This signal is emitted intermittently during  the
+        // execution of BuildReleasePackage.
+        // Action is the name of the current action (human-readable)
         // and step is the number of the current step out of total
         // steps under this action.
         void ResourcePackingUpdate(const QString& action, int step, int total);

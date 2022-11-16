@@ -53,6 +53,7 @@
 #include "graphics/drawable.h"
 #include "game/entity.h"
 #include "game/scene.h"
+#include "game/tilemap.h"
 #include "engine/loader.h"
 #include "uikit/window.h"
 #include "audio/graph.h"
@@ -82,6 +83,62 @@ bool LoadFileBufferFromDisk(const std::string& filename, std::vector<char>* buff
     DEBUG("Loaded file buffer. [file='%1', bytes=%2]", filename, buffer->size());
     return true;
 }
+
+class TilemapDataBuffer : public game::TilemapData
+{
+public:
+    TilemapDataBuffer(const std::string& filename, bool read_only, std::vector<char>&& data)
+      : mFileName(filename)
+      , mReadonly(read_only)
+      , mFileData(std::move(data))
+    {}
+
+    virtual void Write(const void* ptr, size_t bytes, size_t offset) override
+    {
+        ASSERT(offset + bytes <= mFileData.size());
+        ASSERT(mReadonly == false);
+        std::memcpy(&mFileData[offset], ptr, bytes);
+    }
+    virtual void Read(void* ptr, size_t bytes, size_t offset) const override
+    {
+        ASSERT(offset + bytes <= mFileData.size());
+        std::memcpy(ptr, &mFileData[offset], bytes);
+    }
+
+    virtual size_t AppendChunk(size_t bytes) override
+    {
+        ASSERT(mReadonly == false);
+        const auto offset = mFileData.size();
+        mFileData.resize(offset + bytes);
+        return offset;
+    }
+    virtual size_t GetByteCount() const override
+    {
+        return mFileData.size();
+    }
+    virtual void Resize(size_t bytes) override
+    {
+        ASSERT(mReadonly == false);
+        mFileData.resize(bytes);
+    }
+
+    virtual void ClearChunk(const void* value, size_t value_size, size_t offset, size_t num_values) override
+    {
+        ASSERT(mReadonly == false);
+        ASSERT(offset + value_size * num_values <= mFileData.size());
+
+        for (size_t i=0; i<num_values; ++i)
+        {
+            const auto buffer_offset = offset + i * value_size;
+            std::memcpy(&mFileData[buffer_offset], value, value_size);
+        }
+    }
+private:
+    const std::string mFileName;
+    const bool mReadonly = false;
+    std::vector<char> mFileData;
+};
+
 template<typename Interface>
 class FileBuffer : public Interface
 {
@@ -104,6 +161,10 @@ private:
     const std::string mFileName;
     const std::vector<char> mFileData;
 };
+
+using GameDataFileBuffer = FileBuffer<EngineData>;
+using GraphicsFileBuffer = FileBuffer<gfx::Resource>;
+
 #if defined(POSIX_OS)
 class AudioFileMap : public audio::SourceStream
 {
@@ -305,9 +366,6 @@ private:
     std::uint64_t mSize = 0;
 };
 
-using GameDataFileBuffer = FileBuffer<GameData>;
-using GraphicsFileBuffer = FileBuffer<gfx::Resource>;
-
 class FileResourceLoaderImpl : public FileResourceLoader
 {
 public:
@@ -328,7 +386,7 @@ public:
         return buff;
     }
     // GameDataLoader impl
-    virtual GameDataHandle LoadGameData(const std::string& uri) const override
+    virtual EngineDataHandle LoadEngineDataUri(const std::string& uri) const override
     {
         const auto& filename = ResolveURI(uri);
         auto it = mGameDataBufferCache.find(filename);
@@ -343,7 +401,7 @@ public:
         mGameDataBufferCache[filename] = buff;
         return buff;
     }
-    virtual GameDataHandle LoadGameDataFromFile(const std::string& filename) const override
+    virtual EngineDataHandle LoadEngineDataFile(const std::string& filename) const override
     {
         // expect this to be a path relative to the content path
         // this loading function is only used to load the Lua files
@@ -363,6 +421,27 @@ public:
         mGameDataBufferCache[file] = buff;
         return buff;
     }
+    virtual EngineDataHandle LoadEngineDataId(const std::string& id) const override
+    {
+        if (const auto* uri = base::SafeFind(mObjectIdUriMap, id))
+        {
+            const auto& filename = ResolveURI(*uri);
+            auto it = mGameDataBufferCache.find(filename);
+            if (it != mGameDataBufferCache.end())
+                return it->second;
+
+            std::vector<char> buffer;
+            if (!LoadFileBuffer(filename, &buffer))
+                return nullptr;
+
+            auto buff = std::make_shared<GameDataFileBuffer>(*uri, std::move(buffer));
+            mGameDataBufferCache[filename] = buff;
+            return buff;
+        }
+        ERROR("No URI mapping for engine data. [id='%1']", id);
+        return nullptr;
+    }
+
     // audio::Loader impl
     virtual audio::SourceStreamHandle OpenAudioStream(const std::string& uri,
         AudioIOStrategy strategy, bool enable_file_caching) const override
@@ -443,7 +522,42 @@ public:
         return ret;
     }
 
+    // game::Loader impl
+    virtual game::TilemapDataHandle LoadTilemapData(const game::Loader::TilemapDataDesc& desc) const override
+    {
+        const auto& filename = ResolveURI(desc.uri);
+
+        std::vector<char> buffer;
+        if (!LoadFileBuffer(filename, &buffer))
+            return nullptr;
+
+        return std::make_shared<TilemapDataBuffer>(desc.uri, desc.read_only, std::move(buffer));
+    }
+
     // FileResourceLoader impl
+    virtual bool LoadResourceLoadingInfo(const data::Reader& data) override
+    {
+        for (unsigned i=0; i<data.GetNumChunks("scripts"); ++i)
+        {
+            std::string id;
+            std::string uri;
+            const auto& chunk = data.GetReadChunk("scripts", i);
+            chunk->Read("id", &id);
+            chunk->Read("uri", &uri);
+            mObjectIdUriMap[std::move(id)] = std::move(uri);
+        }
+        for (unsigned i=0; i<data.GetNumChunks("data_files"); ++i)
+        {
+            std::string id;
+            std::string uri;
+            const auto& chunk = data.GetReadChunk("data_files", i);
+            chunk->Read("id", &id);
+            chunk->Read("uri", &uri);
+            mObjectIdUriMap[std::move(id)] = std::move(uri);
+        }
+        return true;
+    }
+
     virtual void SetDefaultAudioIOStrategy(DefaultAudioIOStrategy strategy) override
     { mDefaultAudioIO = strategy; }
     virtual void SetApplicationPath(const std::string& path) override
@@ -486,7 +600,7 @@ private:
         auto it = mPreloadedFiles.find(filename);
         if (it == mPreloadedFiles.end())
         {
-            WARN("Missed preloaded file buffer. entry. [file='%1']", filename);
+            WARN("Missed preloaded file buffer entry. [file='%1']", filename);
             return LoadFileBufferFromDisk(filename, buffer);
         }
         // ditch the preloaded buffer since it'll be now cached in a higher
@@ -539,6 +653,14 @@ private:
     // the root of the resource dir against which to resolve the resource URIs.
     std::string mContentPath;
     std::string mApplicationPath;
+    // Mapping from IDs to URIS. This happens with scripts and data objects
+    // that are referenced by an ID by some higher level object such as an
+    // entity or tilemap. Originally in the editor the ID is the ID of a
+    // workspace resource object that then contains the URI that maps to the
+    // actual file that contains the data. In this loader implementation
+    // we have no use for the actual object so the whole thing can be
+    // simplified to juse ID->URI mapping.
+    std::unordered_map<std::string, std::string> mObjectIdUriMap;
 };
 
 // static
@@ -561,18 +683,16 @@ public:
     virtual ClassHandle<const game::EntityClass> FindEntityClassById(const std::string& id) const override;
     virtual ClassHandle<const game::SceneClass> FindSceneClassByName(const std::string& name) const override;
     virtual ClassHandle<const game::SceneClass> FindSceneClassById(const std::string& id) const override;
+    virtual ClassHandle<const game::TilemapClass> FindTilemapClassById(const std::string& id) const override;
     // ContentLoader impl
-    virtual bool LoadFromFile(const std::string& file) override;
+    virtual bool LoadClasses(const data::Reader& data) override;
 private:
-    std::string mResourceFile;
     // These are the material types that have been loaded
     // from the resource file.
-    std::unordered_map<std::string,
-            std::shared_ptr<gfx::MaterialClass>> mMaterials;
+    std::unordered_map<std::string, std::shared_ptr<gfx::MaterialClass>> mMaterials;
     // These are the drawable types that have been loaded
     // from the resource file.
-    std::unordered_map<std::string,
-            std::shared_ptr<gfx::DrawableClass>> mDrawables;
+    std::unordered_map<std::string, std::shared_ptr<gfx::DrawableClass>> mDrawables;
     // These are the entities that have been loaded from
     // the resource file.
     std::unordered_map<std::string, std::shared_ptr<game::EntityClass>> mEntities;
@@ -587,6 +707,8 @@ private:
     std::unordered_map<std::string, std::shared_ptr<uik::Window>> mWindows;
     // Audio graphs
     std::unordered_map<std::string, std::shared_ptr<audio::GraphClass>> mAudioGraphs;
+    // Tilemaps
+    std::unordered_map<std::string, std::shared_ptr<game::TilemapClass>> mMaps;
 };
 
 ContentLoaderImpl::ContentLoaderImpl()
@@ -721,31 +843,24 @@ bool LoadMaterials(const data::Reader& data, const char* type,
     return true;
 }
 
-bool ContentLoaderImpl::LoadFromFile(const std::string& file)
+bool ContentLoaderImpl::LoadClasses(const data::Reader& data)
 {
-    data::JsonFile json;
-    const auto [success, error] = json.Load(file);
-    if (!success)
-    {
-        ERROR("Failed to load game content from file. [file=%1', error='%2']", file, error);
+    if (!LoadMaterials(data, "materials", mMaterials, nullptr))
         return false;
-    }
-    data::JsonObject root = json.GetRootObject();
-
-    if (!LoadMaterials(root, "materials", mMaterials, nullptr))
+    if (!LoadContent<gfx::DrawableClass, gfx::KinematicsParticleEngineClass>(data, "particles", mDrawables, nullptr))
         return false;
-    if (!LoadContent<gfx::DrawableClass, gfx::KinematicsParticleEngineClass>(root, "particles", mDrawables, nullptr))
+   if (!LoadContent<gfx::DrawableClass, gfx::PolygonClass>(data, "shapes", mDrawables, nullptr))
+       return false;
+   if (!LoadContent<game::EntityClass>(data, "entities", mEntities, &mEntityNameTable))
+       return false;
+   if (!LoadContent<game::SceneClass>(data, "scenes", mScenes, &mSceneNameTable))
+       return false;
+   if (!LoadContent<uik::Window>(data, "uis", mWindows, nullptr))
+       return false;
+   if (!LoadContent<audio::GraphClass>(data, "audio_graphs", mAudioGraphs, nullptr))
         return false;
-   if (!LoadContent<gfx::DrawableClass, gfx::PolygonClass>(root, "shapes", mDrawables, nullptr))
+   if (!LoadContent<game::TilemapClass>(data, "tilemaps", mMaps, nullptr))
        return false;
-   if (!LoadContent<game::EntityClass>(root, "entities", mEntities, &mEntityNameTable))
-       return false;
-   if (!LoadContent<game::SceneClass>(root, "scenes", mScenes, &mSceneNameTable))
-       return false;
-   if (!LoadContent<uik::Window>(root, "uis", mWindows, nullptr))
-       return false;
-   if (!LoadContent<audio::GraphClass>(root, "audio_graphs", mAudioGraphs, nullptr))
-        return false;
 
     // need to resolve the entity references.
     for (auto& p : mScenes)
@@ -767,7 +882,6 @@ bool ContentLoaderImpl::LoadFromFile(const std::string& file)
             node.SetEntity(klass);
         }
     }
-    mResourceFile = file;
     return true;
 }
 
@@ -804,9 +918,29 @@ ClassHandle<const game::SceneClass> ContentLoaderImpl::FindSceneClassById(const 
 
     return nullptr;
 }
+ClassHandle<const game::TilemapClass> ContentLoaderImpl::FindTilemapClassById(const std::string& id) const
+{
+    auto it = mMaps.find(id);
+    if (it != mMaps.end())
+        return it->second;
+
+    return nullptr;
+}
 
 // static
 std::unique_ptr<JsonFileClassLoader> JsonFileClassLoader::Create()
 { return std::make_unique<ContentLoaderImpl>(); }
+
+bool JsonFileClassLoader::LoadClassesFromFile(const std::string& file)
+{
+    data::JsonFile json;
+    const auto [success, error] = json.Load(file);
+    if (!success)
+    {
+        ERROR("Failed to load game content from file. [file=%1', error='%2']", file, error);
+        return false;
+    }
+    return this->LoadClasses(json.GetRootObject());
+}
 
 } // namespace

@@ -24,6 +24,11 @@
 
 #include "editor/gui/drawing.h"
 
+namespace app {
+    class Resource;
+    class Workspace;
+} // namespace
+
 namespace gui
 {
     class Settings;
@@ -70,6 +75,12 @@ namespace gui
 
         // Initialize the widget default UI settings.
         virtual void Initialize(const UISettings& settings)
+        {}
+
+        // Set the widget in viewer mode where all editing features
+        // are disabled and removed from the widget's UI and only
+        // viewing is possible.
+        virtual void SetViewerMode()
         {}
 
         // Returns whether the widget does accelerated rendering and needs to
@@ -198,6 +209,9 @@ namespace gui
         virtual bool OnEscape()
         { return false; }
 
+        virtual bool OnKeyDown(QKeyEvent* key)
+        { return false; }
+
         struct Stats {
             double time = 0.0;
             struct {
@@ -223,6 +237,8 @@ namespace gui
         { return true; }
 
     signals:
+        // refresh the actions for the widget menu and tool bar.
+        void RefreshActions();
         // Request to have the widget (and the MainWindow) refreshed immediately.
         void RefreshRequest();
         // Request to open the given script file in an external script editor.

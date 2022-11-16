@@ -69,6 +69,11 @@
     <file>16x16_ico_png/color_gradient.png</file>
     <file>16x16_ico_png/image.png</file>
     <file>16x16_ico_png/bitmap.png</file>
+    <file>16x16_ico_png/comment.png</file>
+    <file>16x16_ico_png/tilemap.png</file>
+    <file>16x16_ico_png/brush.png</file>
+    <file>16x16_ico_png/crossed_eye.png</file>
+    <file>16x16_ico_png/compress.png</file>
 
     <file>32x32_ico_png/save.png</file>
     <file>32x32_ico_png/play.png</file>
@@ -104,6 +109,7 @@
 
     <file>texture.png</file>
     <file>music.png</file>
+    <file>about.gif</file>
 
     <file>fonts/orbitron-medium.otf</file>
   </qresource>

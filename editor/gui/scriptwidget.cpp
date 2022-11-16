@@ -883,7 +883,7 @@ void InitDoc()
                                                "Returns nil if no such window object could be found.","string", "id");
 
     DOC_TABLE("game.Drawable");
-    DOC_METHOD_0("string", "GetMaterialId", "Get the graphics subsystem material ID.");
+    DOC_METHOD_0("string", "GetPaletteMaterialId", "Get the graphics subsystem material ID.");
     DOC_METHOD_0("string", "GetDrawableId", "Get the graphics subsystem drawable ID.");
     DOC_METHOD_0("int", "GetLayer", "Get the render layer index.");
     DOC_METHOD_0("float", "GetLineWidth", "Get the line width (in pixels) used when when rasterizing the shape using lines.");
@@ -999,6 +999,7 @@ void InitDoc()
     DOC_TABLE("game.EntityClass");
     DOC_METHOD_0("string", "GetId", "Get the entity class ID.");
     DOC_METHOD_0("string", "GetName", "Get the entity class name.");
+    DOC_METHOD_0("string", "GetTag", "Get entity tag string.");
     DOC_METHOD_0("float", "GetLifetime", "Get the entity lifetime.");
     DOC_METHOD_0("bool|float|string|int|vec2", "index",
                  "Lua index meta method.<br>"
@@ -1093,10 +1094,12 @@ void InitDoc()
     DOC_METHOD_0("string", "GetId", "Get entity instance ID.");
     DOC_METHOD_0("string", "GetClassName", "Get entity class type name.");
     DOC_METHOD_0("string", "GetClassId", "Get entity class type ID.");
+    DOC_METHOD_0("string", "GetTag", "Get entity tag string.");
     DOC_METHOD_0("int", "GetNumNodes", "Get the number of entity nodes in this entity.");
     DOC_METHOD_0("float", "GetTime", "Get the entity's current accumulated (life) time.");
     DOC_METHOD_0("int" , "GetLayer", "Get the entity's render layer in the scene rendering.");
     DOC_METHOD_1("void", "SetLayer", "Set the entity's render layer in the scene rendering.", "int", "layer");
+    DOC_METHOD_1("void", "SetTag", "Set entity tag string.", "string", "tag");
     DOC_METHOD_0("bool", "IsVisible", "Checks whether the entity is currently visible or not.");
     DOC_METHOD_0("bool", "IsAnimating", "Checks whether the entity is currently playing an animation or not.");
     DOC_METHOD_0("bool", "HasExpired", "Checks whether the entity has expired, i.e. exceeded it's max lifetime.");
@@ -1215,6 +1218,8 @@ void InitDoc()
     DOC_METHOD_1("game.Entity", "GetAt", "Get an item at a given index.", "unsigned", "index");
     DOC_METHOD_0("game.Entity", "GetNext", "Get the current item and move on to the next item.");
     DOC_METHOD_0("unsigned", "Size", "Get the number of items in the entity list.");
+    DOC_FUNCTION_2("game.EntityList", "Join", "Join two entity lists together into a new entity list.",
+                   "game.EntityList", "first", "game.EntityList", "second");
 
     DOC_TABLE("game.Scene");
     DOC_METHOD_0("bool|float|string|int|vec2", "index", "Lua index meta method.<br>"
@@ -1224,6 +1229,7 @@ void InitDoc()
                                                            "The scene's script variables are accessible as properties of the scene object.<br>"
                                                            "For example a script variable named 'score' would be accessible as object.score.");
     DOC_METHOD_1("game.EntityList", "ListEntitiesByClassName", "List all entities of the given class identified by its class name", "string", "class");
+    DOC_METHOD_1("game.EntityList", "ListEntitiesByTag", "List all entities that match the given tag string.", "string", "tag");
     DOC_METHOD_0("int", "GetNumEntities", "Get the number of entities currently in the scene.");
     DOC_METHOD_1("game.Entity", "FindEntityByInstanceId", "Find an entity with the given instance ID.<br>"
                                                           "Returns nil if no such entity could be found.",
@@ -1777,13 +1783,13 @@ ScriptWidget::ScriptWidget(app::Workspace* workspace, const app::Resource& resou
     mResourceName = resource.GetName();
     mWatcher.addPath(mFilename);
     LoadDocument(mFilename);
-    setWindowTitle(mResourceName);
 
     bool show_settings = true;
     GetUserProperty(resource, "main_splitter", mUI.mainSplitter);
     GetUserProperty(resource, "help_splitter", mUI.helpSplitter);
     GetUserProperty(resource, "show_settings", &show_settings);
     SetVisible(mUI.settings, show_settings);
+    SetEnabled(mUI.actionSettings, !show_settings);
 
     QString font_name;
     if (GetUserProperty(resource, "font_name", &font_name))
@@ -1935,6 +1941,7 @@ bool ScriptWidget::LoadState(const gui::Settings& settings)
     settings.LoadWidget("Script", mUI.helpSplitter);
     settings.LoadWidget("Script", mUI.tableView);
     SetVisible(mUI.settings, show_settings);
+    SetEnabled(mUI.actionSettings, !show_settings);
 
     QString font_name;
     if (settings.GetValue("Script", "font_name", &font_name))
@@ -1956,8 +1963,6 @@ bool ScriptWidget::LoadState(const gui::Settings& settings)
 
     mUI.code->ApplySettings();
 
-    if (!mResourceName.isEmpty())
-        setWindowTitle(mResourceName);
     if (mFilename.isEmpty())
         return true;
     mWatcher.addPath(mFilename);
@@ -2085,6 +2090,7 @@ void ScriptWidget::on_actionSave_triggered()
 
         app::Script script;
         script.SetFileURI(app::ToUtf8(URI));
+        script.SetTypeTag(app::Script::TypeTag::ScriptData);
         app::ScriptResource resource(script, mResourceName);
         SetUserProperty(resource, "main_splitter", mUI.mainSplitter);
         SetUserProperty(resource, "help_splitter", mUI.helpSplitter);
@@ -2101,7 +2107,6 @@ void ScriptWidget::on_actionSave_triggered()
             SetProperty(resource, "format_on_save", false);
 
         mWorkspace->SaveResource(resource);
-        setWindowTitle(mResourceName);
         mResourceID = app::FromUtf8(script.GetId());
     }
     else
@@ -2179,6 +2184,7 @@ void ScriptWidget::on_actionReplaceText_triggered()
 void ScriptWidget::on_actionSettings_triggered()
 {
     SetVisible(mUI.settings, true);
+    SetEnabled(mUI.actionSettings, false);
 }
 
 void ScriptWidget::on_btnFindNext_clicked()
@@ -2310,6 +2316,7 @@ void ScriptWidget::on_btnResetFont_clicked()
 void ScriptWidget::on_btnSettingsClose_clicked()
 {
     SetVisible(mUI.settings, false);
+    SetEnabled(mUI.actionSettings, true);
 }
 
 void ScriptWidget::on_editorFontName_currentIndexChanged(int)

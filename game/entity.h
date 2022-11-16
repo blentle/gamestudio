@@ -1533,6 +1533,8 @@ namespace game
         { mFlags.set(flag, on_off); }
         void SetName(const std::string& name)
         { mName = name; }
+        void SetTag(const std::string& tag)
+        { mTag = tag; }
         void SetIdleTrackId(const std::string& id)
         { mIdleTrackId = id; }
         void SetSriptFileId(const std::string& file)
@@ -1547,6 +1549,8 @@ namespace game
         { return !mScriptFile.empty(); }
         bool TestFlag(Flags flag) const
         { return mFlags.test(flag); }
+        int GetLayer() const /* stub*/
+        { return 0; }
 
         RenderTree& GetRenderTree()
         { return mRenderTree; }
@@ -1568,6 +1572,8 @@ namespace game
         { return mIdleTrackId; }
         const std::string& GetName() const
         { return mName; }
+        const std::string& GetTag() const
+        { return mTag; }
         const std::string& GetScriptFileId() const
         { return mScriptFile; }
         float GetLifetime() const
@@ -1595,8 +1601,10 @@ namespace game
     private:
         // The class/resource id of this class.
         std::string mClassId;
-        // the human readable name of the class.
+        // the human-readable name of the class.
         std::string mName;
+        // Arbitrary tag string.
+        std::string mTag;
         // the track ID of the idle track that gets played when nothing
         // else is going on. can be empty in which case no animation plays.
         std::string mIdleTrackId;
@@ -1806,6 +1814,9 @@ namespace game
         bool KillAtBoundary() const;
         // Returns true if the entity did just finish an animation.
         bool DidFinishAnimation() const;
+        // Returns true if the entity contains nodes that have rendering
+        // attachments, i.d. drawables or text items.
+        bool HasRenderableItems() const;
 
         using PhysicsJointClass = EntityClass::PhysicsJoint;
         using PhysicsJointType  = EntityClass::PhysicsJointType;
@@ -1865,6 +1876,8 @@ namespace game
         const ScriptVar* FindScriptVarByName(const std::string& name) const;
         const ScriptVar* FindScriptVarById(const std::string& id) const;
 
+        void SetTag(const std::string& tag)
+        { mInstanceTag = tag; }
         void SetFlag(ControlFlags flag, bool on_off)
         { mControlFlags.set(flag, on_off); }
         void SetFlag(Flags flag, bool on_off)
@@ -1920,6 +1933,8 @@ namespace game
         { return mClass->GetName(); }
         const std::string& GetName() const
         { return mInstanceName; }
+        const std::string& GetTag() const
+        { return mInstanceTag; }
         std::size_t GetNumNodes() const
         { return mNodes.size(); }
         std::size_t GetNumJoints() const
@@ -1950,6 +1965,8 @@ namespace game
         std::string mInstanceId;
         // the entity instance name (if any)
         std::string mInstanceName;
+        // the entity instance tag
+        std::string mInstanceTag;
         // When the entity is linked (parented)
         // to another entity this id is the node in the parent
         // entity's render tree that is to be used as the parent

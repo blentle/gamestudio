@@ -27,6 +27,7 @@
 
 #include <vector>
 
+#include "app/resource.h"
 #include "graphics/fwd.h"
 
 namespace app {
@@ -38,11 +39,13 @@ namespace gui
     class DlgMaterial : public QDialog
     {
         Q_OBJECT
+
     public:
-        DlgMaterial(QWidget* parent, app::Workspace* workspace,
-                    const QString& material);
+        DlgMaterial(QWidget* parent, const app::Workspace* workspace, const QString& material);
         QString GetSelectedMaterialId() const
         { return mSelectedMaterialId; }
+        std::string GetSelectedMaterialIdUtf8() const
+        { return app::ToUtf8(mSelectedMaterialId); }
     private slots:
         void on_btnAccept_clicked();
         void on_btnCancel_clicked();
@@ -58,10 +61,11 @@ namespace gui
     private:
         QTimer mTimer;
         QElapsedTimer mElapsedTimer;
-        app::Workspace* mWorkspace = nullptr;
+        QString mSelectedMaterialId;
+        const app::Workspace* mWorkspace = nullptr;
         unsigned mScrollOffsetRow = 0;
         unsigned mNumVisibleRows = 0;
-        std::vector<QString> mMaterialIds;
-        QString mSelectedMaterialId;
+        bool mFirstPaint = true;
+        app::ResourceList mMaterials;
     };
 }

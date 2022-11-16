@@ -841,21 +841,21 @@ std::size_t SectorClass::GetHash() const
 {
     size_t hash = 0;
     hash = base::hash_combine(hash, mId);
+    hash = base::hash_combine(hash, mName);
     hash = base::hash_combine(hash, mPercentage);
     return hash;
 }
-void SectorClass::Pack(Packer* packer) const
-{
-    // nothing here.
-}
+
 void SectorClass::IntoJson(data::Writer& data) const
 {
-    data.Write("id", mId);
+    data.Write("id",         mId);
+    data.Write("name",       mName);
     data.Write("percentage", mPercentage);
 }
 bool SectorClass::LoadFromJson(const data::Reader& data)
 {
-    data.Read("id", &mId);
+    data.Read("id",         &mId);
+    data.Read("name",       &mName);
     data.Read("percentage", &mPercentage);
     return true;
 }
@@ -1077,22 +1077,23 @@ std::size_t RoundRectangleClass::GetHash() const
 {
     size_t hash = 0;
     hash = base::hash_combine(hash, mId);
+    hash = base::hash_combine(hash, mName);
     hash = base::hash_combine(hash, mRadius);
     return hash;
 }
 
-void RoundRectangleClass::Pack(Packer* packer) const
-{
-}
+
 void RoundRectangleClass::IntoJson(data::Writer& data) const
 {
-    data.Write("id", mId);
+    data.Write("id",     mId);
+    data.Write("name",   mName);
     data.Write("radius", mRadius);
 }
 
 bool RoundRectangleClass::LoadFromJson(const data::Reader& data)
 {
-    data.Read("id", &mId);
+    data.Read("id",     &mId);
+    data.Read("name",   &mName);
     data.Read("radius", &mRadius);
     return true;
 }
@@ -1173,30 +1174,29 @@ std::size_t GridClass::GetHash() const
 {
     size_t hash = 0;
     hash = base::hash_combine(hash, mId);
+    hash = base::hash_combine(hash, mName);
     hash = base::hash_combine(hash, mNumHorizontalLines);
     hash = base::hash_combine(hash, mNumVerticalLines);
     hash = base::hash_combine(hash, mBorderLines);
     return hash;
 }
 
-void GridClass::Pack(Packer* packer) const
-{
-}
-
 void GridClass::IntoJson(data::Writer& data) const
 {
-    data.Write("id", mId);
-    data.Write("vertical_lines", mNumVerticalLines);
+    data.Write("id",               mId);
+    data.Write("name",             mName);
+    data.Write("vertical_lines",   mNumVerticalLines);
     data.Write("horizontal_lines", mNumHorizontalLines);
-    data.Write("border_lines", mBorderLines);
+    data.Write("border_lines",     mBorderLines);
 }
 
 bool GridClass::LoadFromJson(const data::Reader& data)
 {
-    data.Read("id", &mId);
-    data.Read("vertical_lines", &mNumVerticalLines);
+    data.Read("id",               &mId);
+    data.Read("name",             &mName);
+    data.Read("vertical_lines",   &mNumVerticalLines);
     data.Read("horizontal_lines", &mNumHorizontalLines);
-    data.Read("border_lines", &mBorderLines);
+    data.Read("border_lines",     &mBorderLines);
     return true;
 }
 
@@ -1276,10 +1276,6 @@ Geometry* PolygonClass::Upload(bool editing_mode, Device& device) const
     return geom;
 }
 
-void PolygonClass::Pack(Packer* packer) const
-{
-}
-
 std::size_t PolygonClass::GetContentHash() const
 {
     size_t hash = 0;
@@ -1303,6 +1299,7 @@ std::size_t PolygonClass::GetHash() const
 {
     size_t hash = 0;
     hash = base::hash_combine(hash, mId);
+    hash = base::hash_combine(hash, mName);
     hash = base::hash_combine(hash, mStatic);
     for (const auto& vertex : mVertices)
     {
@@ -1322,7 +1319,8 @@ std::size_t PolygonClass::GetHash() const
 
 void PolygonClass::IntoJson(data::Writer& data) const
 {
-    data.Write("id", mId);
+    data.Write("id",     mId);
+    data.Write("name",   mName);
     data.Write("static", mStatic);
     for (const auto& v : mVertices)
     {
@@ -1360,19 +1358,19 @@ bool PolygonClass::LoadFromJson(const data::Reader& data)
 std::optional<PolygonClass> PolygonClass::FromJson(const data::Reader& data)
 {
     PolygonClass ret;
-    if (!data.Read("id", &ret.mId) ||
-        !data.Read("static", &ret.mStatic))
-        return std::nullopt;
+    data.Read("id",     &ret.mId);
+    data.Read("name",   &ret.mName);
+    data.Read("static", &ret.mStatic);
 
     for (unsigned i=0; i<data.GetNumChunks("vertices"); ++i)
     {
         const auto& chunk = data.GetReadChunk("vertices", i);
         float x, y, s, t;
-        if (!chunk->Read("x", &x) ||
-            !chunk->Read("y", &y) ||
-            !chunk->Read("s", &s) ||
-            !chunk->Read("t", &t))
-            return std::nullopt;
+        chunk->Read("x", &x);
+        chunk->Read("y", &y);
+        chunk->Read("s", &s);
+        chunk->Read("t", &t);
+
         Vertex vertex;
         vertex.aPosition.x = x;
         vertex.aPosition.y = y;
@@ -1386,10 +1384,10 @@ std::optional<PolygonClass> PolygonClass::FromJson(const data::Reader& data)
         unsigned offset = 0;
         unsigned count  = 0;
         DrawCommand cmd;
-        if (!chunk->Read("type", &cmd.type) ||
-            !chunk->Read("offset", &offset) ||
-            !chunk->Read("count",  &count))
-            return std::nullopt;
+        chunk->Read("type",   &cmd.type);
+        chunk->Read("offset", &offset);
+        chunk->Read("count",  &count);
+
         cmd.offset = offset;
         cmd.count  = count;
         ret.mDrawCommands.push_back(cmd);
@@ -1476,22 +1474,21 @@ std::size_t CursorClass::GetHash() const
 {
     size_t hash = 0;
     hash = base::hash_combine(hash, mId);
+    hash = base::hash_combine(hash, mName);
     hash = base::hash_combine(hash, mShape);
     return hash;
 }
 
-void CursorClass::Pack(Packer* packer) const
-{
-
-}
 void CursorClass::IntoJson(data::Writer& data) const
 {
-    data.Write("id", mId);
+    data.Write("id",    mId);
+    data.Write("name",  mName);
     data.Write("shape", mShape);
 }
 bool CursorClass::LoadFromJson(const data::Reader& data)
 {
-    data.Read("id", &mId);
+    data.Read("id",    &mId);
+    data.Read("name",  &mName);
     data.Read("shape", &mShape);
     return true;
 }
@@ -1682,10 +1679,6 @@ Geometry* KinematicsParticleEngineClass::Upload(const Drawable::Environment& env
     return geom;
 }
 
-void KinematicsParticleEngineClass::Pack(Packer* packer) const
-{
-}
-
 void KinematicsParticleEngineClass::ApplyDynamicState(const Environment& env, Program& program) const
 {
     if (mParams.coordinate_space == CoordinateSpace::Global)
@@ -1828,6 +1821,7 @@ void KinematicsParticleEngineClass::Restart(const Environment& env, InstanceStat
 void KinematicsParticleEngineClass::IntoJson(data::Writer& data) const
 {
     data.Write("id", mId);
+    data.Write("name", mName);
     data.Write("direction", mParams.direction);
     data.Write("placement", mParams.placement);
     data.Write("shape", mParams.shape);
@@ -1877,6 +1871,7 @@ std::optional<KinematicsParticleEngineClass> KinematicsParticleEngineClass::From
 {
     KinematicsParticleEngineClass ret;
     data.Read("id",                           &ret.mId);
+    data.Read("name",                         &ret.mName);
     data.Read("direction",                    &ret.mParams.direction);
     data.Read("placement",                    &ret.mParams.placement);
     data.Read("shape",                        &ret.mParams.shape);
@@ -1916,6 +1911,7 @@ std::size_t KinematicsParticleEngineClass::GetHash() const
 {
     size_t hash = 0;
     hash = base::hash_combine(hash, mId);
+    hash = base::hash_combine(hash, mName);
     hash = base::hash_combine(hash, mParams);
     return hash;
 }
@@ -2224,6 +2220,89 @@ bool KinematicsParticleEngineClass::UpdateParticle(const Environment& env, Insta
     return true;
 }
 
+void TileBatch::ApplyDynamicState(const Environment& env, Program& program, RasterState& raster) const
+{
+    const auto pixel_scale = std::min(env.pixel_ratio.x, env.pixel_ratio.y);
+
+    program.SetUniform("kTileSize",       mTileWidth);
+    program.SetUniform("kTileRasterSize", mTileWidth * pixel_scale);
+    program.SetUniform("kProjectionMatrix",
+        *(const Program::Matrix4x4*)glm::value_ptr(*env.proj_matrix));
+    program.SetUniform("kModelViewMatrix",
+        *(const Program::Matrix4x4*)glm::value_ptr(*env.view_matrix * *env.model_matrix));
+}
+Shader* TileBatch::GetShader(Device& device) const
+{
+    // the shader uses dummy varyings vParticleAlpha, vParticleRandomValue
+    // and vTexCoord. Even though we're now rendering GL_POINTS this isnt
+    // a particle vertex shader. However, if a material shader refers to those
+    // varyings we might get GLSL program build errors on some platforms. 
+    constexpr auto*  src = R"(
+#version 100
+attribute vec2 aTilePosition;
+
+uniform mat4 kProjectionMatrix;
+uniform mat4 kModelViewMatrix;
+
+uniform vec2  kBasePosition;
+uniform float kTileSize;
+uniform float kTileRasterSize;
+
+varying float vParticleAlpha;
+varying float vParticleRandomValue;
+varying vec2 vTexCoord;
+
+void main()
+{
+  vec2 tile = aTilePosition*kTileSize + vec2(0.5)*kTileSize;
+
+  vec4 vertex = vec4(tile.xy, 0.0, 1.0);
+  gl_Position = kProjectionMatrix * kModelViewMatrix * vertex;
+  gl_PointSize = kTileRasterSize;
+  vParticleAlpha = 1.0;
+  vParticleRandomValue = 1.0;
+}
+)";
+    constexpr auto* name = "TileBatchShader";
+
+    auto* shader = device.FindShader(name);
+    if (!shader)
+    {
+        shader = device.MakeShader(name);
+        shader->SetName(name);
+        shader->CompileSource(src);
+    }
+    return shader;
+}
+
+Geometry* TileBatch::Upload(const Environment& env, Device& device) const
+{
+    Geometry* geom = device.FindGeometry("tile-buffer");
+    if (!geom)
+        geom = device.MakeGeometry("tile-buffer");
+
+    using TileVertex = Tile;
+
+    static const VertexLayout layout(sizeof(TileVertex), {
+        {"aTilePosition", 0, 2, 0, offsetof(TileVertex, pos)},
+    });
+
+    geom->SetVertexBuffer(mTiles.data(), mTiles.size(), Geometry::Usage::Stream);
+    geom->SetVertexLayout(layout);
+    geom->ClearDraws();
+    geom->AddDrawCmd(Geometry::DrawType::Points);
+    return geom;
+
+}
+Drawable::Style TileBatch::GetStyle() const
+{
+    return Style::Points;
+}
+std::string TileBatch::GetProgramId() const
+{
+    return "tile-batch-program";
+}
+
 std::unique_ptr<Drawable> CreateDrawableInstance(const std::shared_ptr<const DrawableClass>& klass)
 {
     // factory function based on type switching.
@@ -2268,6 +2347,8 @@ std::unique_ptr<Drawable> CreateDrawableInstance(const std::shared_ptr<const Dra
             return std::make_unique<Cursor>(std::static_pointer_cast<const CursorClass>(klass));
         case DrawableClass::Type::Sector:
             return std::make_unique<Sector>(std::static_pointer_cast<const SectorClass>(klass));
+        case DrawableClass::Type::TileBatch:
+            return std::make_unique<TileBatch>();
     }
     BUG("Unhandled drawable class type");
     return {};

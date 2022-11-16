@@ -225,7 +225,8 @@ private:
 // the current workspace instead of from a file.
 class PlayWindow::ResourceLoader : public gfx::Loader,
                                    public engine::Loader,
-                                   public audio::Loader
+                                   public audio::Loader,
+                                   public game::Loader
 {
 public:
     ResourceLoader(const app::Workspace& workspace,
@@ -244,23 +245,23 @@ public:
 
         const auto& file = ResolveURI(URI);
         DEBUG("URI '%1' => '%2'", URI, file);
-        auto buffer = app::GraphicsFileBuffer::LoadFromFile(file);
+        auto buffer = app::GraphicsBuffer::LoadFromFile(file);
         mGraphicsBuffers[URI] = buffer;
         return buffer;
     }
-    virtual engine::GameDataHandle LoadGameData(const std::string& URI) const override
+    virtual engine::EngineDataHandle LoadEngineDataUri(const std::string& URI) const override
     {
-        auto it = mGameDataBuffers.find(URI);
-        if (it != mGameDataBuffers.end())
+        auto it = mEngineDataBuffers.find(URI);
+        if (it != mEngineDataBuffers.end())
             return it->second;
 
         const auto& file = ResolveURI(URI);
         DEBUG("URI '%1' => '%2'", URI, file);
-        auto buffer = app::GameDataFileBuffer::LoadFromFile(file);
-        mGameDataBuffers[URI] = buffer;
+        auto buffer = app::EngineBuffer::LoadFromFile(file);
+        mEngineDataBuffers[URI] = buffer;
         return buffer;
     }
-    virtual engine::GameDataHandle LoadGameDataFromFile(const std::string& filename) const override
+    virtual engine::EngineDataHandle LoadEngineDataFile(const std::string& filename) const override
     {
         // expect this to be a path relative to the content path
         // (which is the workspace path here)
@@ -269,8 +270,13 @@ public:
         // this function can go away!
         const auto& file = app::JoinPath(mWorkspace.GetDir(), app::FromUtf8(filename));
 
-        return app::GameDataFileBuffer::LoadFromFile(file);
+        return app::EngineBuffer::LoadFromFile(file);
     }
+    virtual engine::EngineDataHandle LoadEngineDataId(const std::string& id) const override
+    {
+        return mWorkspace.LoadEngineDataId(id);
+    }
+
     virtual audio::SourceStreamHandle OpenAudioStream(const std::string& URI,
         AudioIOStrategy strategy, bool enable_file_caching) const override
     {
@@ -278,10 +284,21 @@ public:
         DEBUG("URI '%1' => '%2'", URI, file);
         return audio::OpenFileStream(app::ToUtf8(file), strategy, enable_file_caching);
     }
+    // game::Loader implementation
+    virtual game::TilemapDataHandle LoadTilemapData(const game::Loader::TilemapDataDesc& desc) const override
+    {
+        const auto& file = ResolveURI(desc.uri);
+        DEBUG("URI '%1' => '%2'", desc.uri, file);
+        if (desc.read_only)
+            return app::TilemapMemoryMap::OpenFilemap(file);
+
+        return app::TilemapBuffer::LoadFromFile(file);
+    }
+
     std::size_t GetBufferCacheSize() const
     {
         size_t ret = 0;
-        for (const auto& pair : mGameDataBuffers)
+        for (const auto& pair : mEngineDataBuffers)
             ret += pair.second->GetSize();
         for (const auto& pair : mGraphicsBuffers)
             ret += pair.second->GetSize();
@@ -289,7 +306,7 @@ public:
     }
     void BlowCaches()
     {
-        mGameDataBuffers.clear();
+        mEngineDataBuffers.clear();
         mGraphicsBuffers.clear();
     }
 private:
@@ -311,7 +328,7 @@ private:
             mFileMaps[URI]  = ret;
             return ret;
         }
-        WARN("Unmapped resource URI '%1'", URI);
+        WARN("Unmapped resource URI. [uri='%1']", URI);
 
         // What to do with paths such as "textures/UFO/ufo.png" ?
         // the application expects this to be relative and to be resolved
@@ -326,7 +343,7 @@ private:
     const QString mGameDir;
     const QString mHostDir;
     mutable std::unordered_map<std::string, QString> mFileMaps;
-    mutable std::unordered_map<std::string, engine::GameDataHandle> mGameDataBuffers;
+    mutable std::unordered_map<std::string, engine::EngineDataHandle> mEngineDataBuffers;
     mutable std::unordered_map<std::string, gfx::ResourceHandle> mGraphicsBuffers;
 };
 
@@ -852,10 +869,11 @@ void PlayWindow::DoAppInit()
         app::MakePath(app::JoinPath(user_home, ".GameStudio"));
         app::MakePath(app::JoinPath(user_home, game_home));
         engine::Engine::Environment env;
-        env.classlib  = &mWorkspace;
-        env.game_data_loader   = mResourceLoader.get();
+        env.classlib           = &mWorkspace;
+        env.engine_loader      = mResourceLoader.get();
         env.graphics_loader    = mResourceLoader.get();
         env.audio_loader       = mResourceLoader.get();
+        env.game_loader        = mResourceLoader.get();
         env.directory          = app::ToUtf8(mGameWorkingDir);
         env.user_home          = app::ToUtf8(QDir::toNativeSeparators(user_home));
         env.game_home          = app::ToUtf8(app::JoinPath(user_home, game_home));

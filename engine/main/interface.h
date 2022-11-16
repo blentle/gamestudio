@@ -32,6 +32,7 @@
 #include "base/trace.h"
 #include "audio/loader.h"
 #include "audio/format.h"
+#include "game/loader.h"
 #include "engine/classlib.h"
 #include "engine/loader.h"
 #include "engine/color.h"
@@ -164,14 +165,16 @@ namespace engine
             // Interface for accessing resource classes such as scenes, entities
             // materials etc.
             engine::ClassLibrary* classlib = nullptr;
-            // Interface for accessing game data packaged with the game.
+            // Interface for accessing engine data packaged with the game.
             // Not the data *generated* by the game such as save games.
-            engine::Loader* game_data_loader = nullptr;
+            engine::Loader* engine_loader = nullptr;
             // Interface for accessing low level graphics resources such as shaders
             // textures and fonts.
             gfx::Loader* graphics_loader = nullptr;
             // Interface for accessing low level audio resources.
             audio::Loader* audio_loader = nullptr;
+            // Interface for accessing game play class data such as tilemaps.
+            game::Loader* game_loader = nullptr;
             // Path to the top level directory where the app/game is
             // I.e. where the GameMain, config.json, content.json etc. files
             // are. UTF-8 encoded.

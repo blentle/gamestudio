@@ -38,7 +38,7 @@
 namespace engine
 {
     class ClassLibrary;
-    class GameData;
+    class EngineData;
 
     // Interface for abstracting away how UI materials are sourced
     // or created.
@@ -71,7 +71,7 @@ namespace engine
         virtual void IntoJson(nlohmann::json& json) const = 0;
         // Returns true if the material can still be resolved to a
         // gfx material class. In cases where the material to be used
-        // is a material that needs to be loaded through the the classlib
+        // is a material that needs to be loaded through the classlib
         // it's possible that it's actually no longer available. In such
         // cases the function should return false.
         virtual bool IsAvailable(const ClassLibrary& loader) const
@@ -444,11 +444,19 @@ namespace engine
         const UIMaterial* GetMaterialType(const std::string& key) const;
         // Load style properties and materials based on the JSON.
         bool LoadStyle(const nlohmann::json& json);
-        bool LoadStyle(const GameData& data);
+        bool LoadStyle(const EngineData& data);
+        // Save the current style properties into a JSON object.
+        void SaveStyle(nlohmann::json& json) const;
         // Collect the properties and materials that match the given filter
         // into a style string. The style string is in a format supported by
         // ParseStyleString.
         std::string MakeStyleString(const std::string& filter) const;
+
+        struct MaterialEntry {
+            std::string key;
+            const UIMaterial* material = nullptr;
+        };
+        void ListMaterials(std::vector<MaterialEntry>* list) const;
 
         void ClearProperties()
         { mProperties.clear(); }

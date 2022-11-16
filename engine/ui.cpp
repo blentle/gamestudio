@@ -288,7 +288,7 @@ bool UIStyle::LoadStyle(const nlohmann::json& json)
     }
     return true;
 }
-bool UIStyle::LoadStyle(const GameData& data)
+bool UIStyle::LoadStyle(const EngineData& data)
 {
     const auto* beg = (const char*)data.GetData();
     const auto* end = beg + data.GetSize();
@@ -299,6 +299,39 @@ bool UIStyle::LoadStyle(const GameData& data)
         return false;
     }
     return LoadStyle(json);
+}
+
+void UIStyle::SaveStyle(nlohmann::json& json) const
+{
+    for (const auto& [key, val] : mProperties)
+    {
+        nlohmann::json prop;
+        base::JsonWrite(prop, "key", key);
+        if (const auto* color = std::any_cast<gfx::Color4f>(&val))
+            base::JsonWrite(prop, "value", *color);
+        else if(const auto* string = std::any_cast<std::string>(&val))
+            base::JsonWrite(prop, "value", *string);
+        else if (const auto* integer= std::any_cast<int>(&val))
+            base::JsonWrite(prop, "value", *integer);
+        else if (const auto* integer = std::any_cast<unsigned>(&val))
+            base::JsonWrite(prop, "value", *integer);
+        else if (const auto* real = std::any_cast<float>(&val))
+            base::JsonWrite(prop, "value", *real);
+        else if (const auto* real = std::any_cast<double>(&val))
+            base::JsonWrite(prop, "value", *real);
+        else if (const auto* boolean = std::any_cast<bool>(&val))
+            base::JsonWrite(prop, "value", *boolean);
+        else BUG("Unsupported property type.");
+        json["properties"].push_back(std::move(prop));
+    }
+    for (const auto& [key, mat] : mMaterials)
+    {
+        nlohmann::json material;
+        base::JsonWrite(material, "key", key);
+        base::JsonWrite(material, "type", mat->GetType());
+        mat->IntoJson(material);
+        json["materials"].push_back(std::move(material));
+    }
 }
 
 std::string UIStyle::MakeStyleString(const std::string& filter) const
@@ -348,6 +381,17 @@ std::string UIStyle::MakeStyleString(const std::string& filter) const
     if (json.empty())
         return "";
     return json.dump();
+}
+
+void UIStyle::ListMaterials(std::vector<MaterialEntry>* list) const
+{
+    for (const auto& [key, material] : mMaterials)
+    {
+        MaterialEntry me;
+        me.key = key;
+        me.material = material.get();
+        list->push_back(std::move(me));
+    }
 }
 
 bool UIStyle::PurgeUnavailableMaterialReferences()

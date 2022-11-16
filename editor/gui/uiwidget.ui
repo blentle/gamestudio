@@ -24,8 +24,14 @@
       <widget class="QGroupBox" name="baseProperties">
        <property name="minimumSize">
         <size>
-         <width>400</width>
+         <width>0</width>
          <height>0</height>
+        </size>
+       </property>
+       <property name="maximumSize">
+        <size>
+         <width>16777215</width>
+         <height>16777215</height>
         </size>
        </property>
        <property name="title">
@@ -527,6 +533,25 @@
       </widget>
      </item>
      <item>
+      <widget class="QLabel" name="lblHelp">
+       <property name="text">
+        <string>&lt;html&gt;&lt;head/&gt;&lt;body&gt;&lt;p&gt;&lt;span style=&quot; font-style:italic;&quot;&gt;Hold Control key to toggle &amp;quot;Snap to grid&amp;quot; when &lt;br/&gt;moving or resizing a widget.&lt;/span&gt;&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</string>
+       </property>
+       <property name="textFormat">
+        <enum>Qt::AutoText</enum>
+       </property>
+       <property name="scaledContents">
+        <bool>false</bool>
+       </property>
+       <property name="wordWrap">
+        <bool>true</bool>
+       </property>
+       <property name="margin">
+        <number>10</number>
+       </property>
+      </widget>
+     </item>
+     <item>
       <spacer name="verticalSpacer">
        <property name="orientation">
         <enum>Qt::Vertical</enum>
@@ -565,7 +590,7 @@
         <item>
          <layout class="QHBoxLayout" name="horizontalLayout_6">
           <item>
-           <widget class="QLabel" name="label_3">
+           <widget class="QLabel" name="lblZoom">
             <property name="text">
              <string>Zoom</string>
             </property>
@@ -674,7 +699,7 @@
        </property>
        <property name="maximumSize">
         <size>
-         <width>400</width>
+         <width>16777215</width>
          <height>16777215</height>
         </size>
        </property>
@@ -1676,7 +1701,7 @@
     <string>Place a new label widget</string>
    </property>
    <property name="shortcut">
-    <string>Ctrl+2</string>
+    <string>Ctrl+1</string>
    </property>
   </action>
   <action name="actionNewPushButton">
@@ -1694,7 +1719,7 @@
     <string>Place a new push button widget</string>
    </property>
    <property name="shortcut">
-    <string>Ctrl+3</string>
+    <string>Ctrl+2</string>
    </property>
   </action>
   <action name="actionNewCheckBox">
@@ -1712,7 +1737,7 @@
     <string>Place a new check box widget</string>
    </property>
    <property name="shortcut">
-    <string>Ctrl+4</string>
+    <string>Ctrl+3</string>
    </property>
   </action>
   <action name="actionWidgetDelete">
@@ -1757,7 +1782,7 @@
     <string>Place a new group box</string>
    </property>
    <property name="shortcut">
-    <string>Ctrl+5</string>
+    <string>Ctrl+4</string>
    </property>
   </action>
   <action name="actionNewSpinBox">
@@ -1775,7 +1800,7 @@
     <string>Place a new spinbox</string>
    </property>
    <property name="shortcut">
-    <string>Ctrl+6</string>
+    <string>Ctrl+5</string>
    </property>
   </action>
   <action name="actionNewSlider">
@@ -1793,7 +1818,7 @@
     <string>Place a new slider</string>
    </property>
    <property name="shortcut">
-    <string>Ctrl+7</string>
+    <string>Ctrl+6</string>
    </property>
   </action>
   <action name="actionNewProgressBar">
@@ -1811,7 +1836,7 @@
     <string>Place new progress bar</string>
    </property>
    <property name="shortcut">
-    <string>Ctrl+8</string>
+    <string>Ctrl+7</string>
    </property>
   </action>
   <action name="actionNewForm">
@@ -1829,7 +1854,7 @@
     <string>Place a new background form</string>
    </property>
    <property name="shortcut">
-    <string>Ctrl+1</string>
+    <string>Ctrl+9</string>
    </property>
   </action>
   <action name="actionNewRadioButton">
@@ -1847,7 +1872,7 @@
     <string>Place a new radio button</string>
    </property>
    <property name="shortcut">
-    <string>Ctrl+9</string>
+    <string>Ctrl+8</string>
    </property>
   </action>
  </widget>

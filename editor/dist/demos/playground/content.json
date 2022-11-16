@@ -272,7 +272,7 @@
             "font_name": "app://fonts/orbitron-bold.otf",
             "font_size": 20,
             "horizontal_align": "Center",
-            "layer": 0,
+            "layer": 1,
             "line_height": 1.0,
             "raster_height": 0,
             "raster_width": 0,
@@ -1227,6 +1227,49 @@
             "x": 200.0,
             "y": 23.940000534057617
           }
+        },
+        {
+          "class": "uNSbgrIAfJ",
+          "flags": {
+            "VisibleInEditor": true
+          },
+          "name": "Node 0",
+          "position": {
+            "x": 0.0,
+            "y": -50.0
+          },
+          "rotation": -0.00855211354792118,
+          "scale": {
+            "x": 1.0,
+            "y": 1.0
+          },
+          "size": {
+            "x": 200.0,
+            "y": 100.0
+          },
+          "text_item": {
+            "flags": {
+              "BlinkText": false,
+              "StaticContent": false,
+              "UnderlineText": false,
+              "VisibleInGame": true
+            },
+            "font_name": "app://fonts/karmatic_arcade.ttf",
+            "font_size": 28,
+            "horizontal_align": "Center",
+            "layer": 0,
+            "line_height": 1.0,
+            "raster_height": 0,
+            "raster_width": 0,
+            "text": "weird\nwidget",
+            "text_color": {
+              "a": 1.0,
+              "b": 1.0,
+              "g": 1.0,
+              "r": 1.0
+            },
+            "vertical_align": "Center"
+          }
         }
       ],
       "render_tree": {
@@ -1234,6 +1277,13 @@
           {
             "children": [
               {
+                "children": [
+                  {
+                    "node": {
+                      "id": "uNSbgrIAfJ"
+                    }
+                  }
+                ],
                 "node": {
                   "id": "SGHkKNqZ8G"
                 }
@@ -1861,7 +1911,8 @@
       },
       "resource_id": "lTi7YXjdsz",
       "resource_name": "Phys Test 0",
-      "script_file": ""
+      "script_file": "",
+      "tilemap": ""
     },
     {
       "dynamic_spatial_index": "Disabled",
@@ -3202,7 +3253,8 @@
       },
       "resource_id": "XwQTFkhxPJ",
       "resource_name": "Phys Test 1",
-      "script_file": ""
+      "script_file": "",
+      "tilemap": ""
     },
     {
       "dynamic_spatial_index": "Disabled",
@@ -3487,7 +3539,8 @@
       },
       "resource_id": "7zQLUleDer",
       "resource_name": "Phys Test 2",
-      "script_file": ""
+      "script_file": "",
+      "tilemap": ""
     },
     {
       "dynamic_spatial_index": "Disabled",
@@ -4037,6 +4090,7 @@
       "resource_id": "pATaRMBTR7",
       "resource_name": "Phys Test 3",
       "script_file": "",
+      "tilemap": "",
       "vars": [
         {
           "array": false,
@@ -4646,6 +4700,7 @@
       "resource_id": "v8AR2h5m8R",
       "resource_name": "Phys Test 4",
       "script_file": "",
+      "tilemap": "",
       "vars": [
         {
           "array": false,
@@ -5248,7 +5303,8 @@
       },
       "resource_id": "2rSIWqteXS",
       "resource_name": "Phys Test 5",
-      "script_file": "k4Stm2rLJJ"
+      "script_file": "k4Stm2rLJJ",
+      "tilemap": ""
     },
     {
       "dynamic_spatial_index": "Disabled",
@@ -5527,38 +5583,54 @@
       },
       "resource_id": "f7S1HTDAgE",
       "resource_name": "Phys Test 6",
-      "script_file": ""
+      "script_file": "",
+      "tilemap": ""
     }
   ],
   "scripts": [
     {
       "id": "Xg0GdRiaQU",
+      "name": "game",
+      "owner": "",
       "resource_id": "Xg0GdRiaQU",
       "resource_name": "game",
+      "type": "Unspecified",
       "uri": "ws://lua/game.lua"
     },
     {
       "id": "9jMLWUyAWj",
+      "name": "Constant Speed Ball",
+      "owner": "",
       "resource_id": "9jMLWUyAWj",
       "resource_name": "Constant Speed Ball",
+      "type": "Unspecified",
       "uri": "ws://lua/9jMLWUyAWj.lua"
     },
     {
       "id": "kppKkQuA0g",
+      "name": "User Ball",
+      "owner": "",
       "resource_id": "kppKkQuA0g",
       "resource_name": "User Ball",
+      "type": "Unspecified",
       "uri": "ws://lua/kppKkQuA0g.lua"
     },
     {
       "id": "QCSIpWak63",
+      "name": "Static Block",
+      "owner": "",
       "resource_id": "QCSIpWak63",
       "resource_name": "Static Block",
+      "type": "Unspecified",
       "uri": "ws://lua/QCSIpWak63.lua"
     },
     {
       "id": "k4Stm2rLJJ",
+      "name": "Phys Test 5",
+      "owner": "",
       "resource_id": "k4Stm2rLJJ",
       "resource_name": "Phys Test 5",
+      "type": "Unspecified",
       "uri": "ws://lua/k4Stm2rLJJ.lua"
     }
   ],
@@ -5572,6 +5644,7 @@
         }
       ],
       "id": "Kv8Ml9IlfK",
+      "name": "My Shape",
       "resource_id": "Kv8Ml9IlfK",
       "resource_name": "My Shape",
       "static": true,

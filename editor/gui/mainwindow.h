@@ -121,10 +121,14 @@ namespace gui
         void on_actionNewSceneScript_triggered();
         void on_actionNewUIScript_triggered();
         void on_actionNewUI_triggered();
+        void on_actionNewTilemap_triggered();
         void on_actionNewAudioGraph_triggered();
         void on_actionImportFiles_triggered();
+        void on_actionImportTiles_triggered();
         void on_actionExportJSON_triggered();
         void on_actionImportJSON_triggered();
+        void on_actionImportZIP_triggered();
+        void on_actionExportZIP_triggered();
         void on_actionEditResource_triggered();
         void on_actionEditResourceNewWindow_triggered();
         void on_actionEditResourceNewTab_triggered();
@@ -137,6 +141,7 @@ namespace gui
         void on_actionCloseWorkspace_triggered();
         void on_actionSettings_triggered();
         void on_actionImagePacker_triggered();
+        void on_actionLaunchViewer_triggered();
         void on_actionClearLog_triggered();
         void on_actionLogShowInfo_toggled(bool val);
         void on_actionLogShowWarning_toggled(bool val);
@@ -164,6 +169,7 @@ namespace gui
         void on_btnScript_clicked();
         void on_btnUI_clicked();
         void on_btnAudio_clicked();
+        void on_btnTilemap_clicked();
         void actionWindowFocus_triggered();
         void RefreshUI();
         void ShowNote(const app::Event& event);
@@ -173,10 +179,14 @@ namespace gui
         void OpenExternalAudio(const QString& file);
         void OpenNewWidget(MainWidget* widget);
         void RefreshWidget();
+        void RefreshWidgetActions();
         void OpenResource(const QString& id);
         void OpenRecentWorkspace();
         void ToggleShowResource();
         void CleanGarbage();
+        void ResourceUpdated(const app::Resource* resource);
+        void ResourceAvailable(const app::Resource* resource);
+        void ViewerJsonMessageReceived(const QJsonObject& json);
 
     private:
         void BuildRecentWorkspacesMenu();
@@ -235,10 +245,12 @@ namespace gui
         // the child process for running the game
         // in a separate process (GameHost).
         app::Process mGameProcess;
+        app::Process mViewerProcess;
         // Local host socket for communicating workspace
         // events to the child (client) game process over
         // ICP messaging.
         std::unique_ptr<app::IPCHost> mIPCHost;
+        std::unique_ptr<app::IPCHost> mIPCHost2;
         // proxy model for filtering application event log
         app::EventLogProxy mEventLog;
         // the application's main clipboard.

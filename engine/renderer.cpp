@@ -34,6 +34,7 @@
 #include "game/entity.h"
 #include "game/scene.h"
 #include "game/types.h"
+#include "game/tilemap.h"
 #include "engine/renderer.h"
 
 using namespace game;
@@ -43,8 +44,79 @@ namespace engine
 
 void Renderer::BeginFrame()
 {
-    for (auto& p : mPaintNodes)
-        p.second.visited = false;
+    if (mEditingMode)
+    {
+        for (auto& p: mPaintNodes)
+            p.second.visited = false;
+    }
+}
+
+void Renderer::CreateScene(const game::Scene& scene)
+{
+    mPaintNodes.clear();
+
+    const auto& nodes = scene.CollectNodes();
+
+    gfx::Transform transform;
+
+    for (const auto& p : nodes)
+    {
+        const Entity* entity = p.entity_object;
+        if (!entity->HasRenderableItems())
+            continue;
+        transform.Push(p.node_to_scene);
+            MapEntity<Entity, EntityNode>(*p.entity_object, transform);
+        transform.Pop();
+    }
+
+}
+
+void Renderer::UpdateScene(const game::Scene& scene)
+{
+    const auto& nodes = scene.CollectNodes();
+
+    gfx::Transform transform;
+
+    for (const auto& p : nodes)
+    {
+        const Entity* entity = p.entity_object;
+
+        // either delete dead entites here or create a "BeginLoop" type of function
+        // and do the pruning there.
+        if (entity->HasBeenKilled())
+        {
+            for (size_t i=0; i<entity->GetNumNodes(); ++i)
+            {
+                const EntityNode& node = entity->GetNode(i);
+                mPaintNodes.erase(node.GetId());
+            }
+            continue;
+        }
+
+        transform.Push(p.node_to_scene);
+            MapEntity<Entity, EntityNode>(*p.entity_object, transform);
+        transform.Pop();
+    }
+}
+
+void Renderer::Update(float time, float dt)
+{
+    for (auto& [key, node] : mPaintNodes)
+    {
+        UpdateNode<EntityNode>(node, time, dt);
+    }
+}
+
+void Renderer::Draw(gfx::Painter& painter, EntityInstanceDrawHook* hook)
+{
+    std::vector<DrawPacket> packets;
+    for (auto& [key, node] : mPaintNodes)
+    {
+        CreateDrawResources<Entity, EntityNode>(node);
+        GenerateDrawPackets<Entity, EntityNode>(node, packets, hook);
+        node.visited = true;
+    }
+    DrawPackets(painter, packets);
 }
 
 void Renderer::Draw(const Entity& entity,
@@ -58,7 +130,18 @@ void Renderer::Draw(const Entity& entity,
 
     for (size_t i=0; i<entity.GetNumNodes(); ++i)
     {
-        PrimeNode(entity, entity.GetNode(i), transform, packets, hook);
+        const auto& node = entity.GetNode(i);
+        if (auto* paint = base::SafeFind(mPaintNodes, node.GetId()))
+        {
+            CreateDrawResources<Entity, EntityNode>(*paint);
+            GenerateDrawPackets<Entity, EntityNode>(*paint, packets, hook);
+        }
+        else if (hook)
+        {
+            transform.Push(entity.FindNodeTransform(&node));
+                hook->AppendPackets(&node, transform, packets);
+            transform.Pop();
+        }
     }
     DrawPackets(painter, packets);
 }
@@ -75,7 +158,18 @@ void Renderer::Draw(const EntityClass& entity,
 
     for (size_t i=0; i<entity.GetNumNodes(); ++i)
     {
-        PrimeNode(entity, entity.GetNode(i), transform, packets, hook);
+        const auto& node = entity.GetNode(i);
+        if (auto* paint = base::SafeFind(mPaintNodes, node.GetId()))
+        {
+            CreateDrawResources<EntityClass, EntityNodeClass>(*paint);
+            GenerateDrawPackets<EntityClass, EntityNodeClass>(*paint, packets, hook);
+        }
+        else if (hook)
+        {
+            transform.Push(entity.FindNodeTransform(&node));
+                hook->AppendPackets(&node, transform, packets);
+            transform.Pop();
+        }
     }
     DrawPackets(painter, packets);
 }
@@ -100,30 +194,135 @@ void Renderer::Draw(const SceneClass& scene,
         painter, transform, scene_hook, entity_hook);
 }
 
+void Renderer::Draw(const game::Tilemap& map,
+                    const game::FRect& viewport,
+                    gfx::Painter& painter,
+                    gfx::Transform& transform)
+{
+    for (size_t i=0; i<map.GetNumLayers(); ++i)
+    {
+        const auto& layer = map.GetLayer(i);
+        if (layer.IsVisible() && layer.HasRenderComponent() && layer.IsLoaded())
+        {
+            constexpr auto draw_render_layer = true;
+            constexpr auto draw_data_layer = false;
+            Draw(map, layer, viewport, painter, transform, i, draw_render_layer,  draw_data_layer);
+        }
+    }
+}
+void Renderer::Draw(const game::Tilemap& map,
+                    const game::TilemapLayer& layer,
+                    const game::FRect& viewport,
+                    gfx::Painter& painter,
+                    gfx::Transform& transform,
+                    std::size_t layer_index,
+                    bool draw_render_layer,
+                    bool draw_data_layer)
+{
+    const auto tile_width = map.GetTileWidth();
+    const auto tile_height = map.GetTileHeight();
+    const auto layer_tile_width  = tile_width * layer.GetTileSizeScaler();
+    const auto layer_tile_height = tile_height * layer.GetTileSizeScaler();
+
+    const unsigned layer_width_tiles  = layer.GetWidth();
+    const unsigned layer_height_tiles = layer.GetHeight();
+    const float layer_width_units  = layer_width_tiles  * layer_tile_width;
+    const float layer_height_units = layer_height_tiles * layer_tile_height;
+
+    const auto& model_to_world = transform.GetAsMatrix();
+    const auto& world_to_view  = painter.GetViewMatrix();
+    const auto& model_to_view  = world_to_view * model_to_world;
+    const auto& map_box  = game::FBox(model_to_view, layer_width_units, layer_height_units);
+    const auto& map_rect = map_box.GetBoundingRect();
+    const auto& view_intersection = Intersect(map_rect, viewport);
+
+    const auto& map_area = TransformRect(view_intersection, glm::inverse(model_to_view));
+
+    const unsigned tile_row = map_area.GetTopLeft().y / layer_tile_height;
+    const unsigned tile_col = map_area.GetTopLeft().x / layer_tile_width;
+    const unsigned num_tile_rows = map_area.GetHeight() / layer_tile_height + 1;
+    const unsigned num_tile_cols = map_area.GetWidth()/ layer_tile_width + 1;
+
+    const unsigned max_draw_cols = std::min(tile_col+num_tile_cols, layer_width_tiles);
+    const unsigned max_draw_rows = std::min(tile_row+num_tile_rows, layer_height_tiles);
+    const auto tile_rect = game::URect(tile_col, tile_row, max_draw_cols, max_draw_rows);
+    const auto tile_size = game::FSize(layer_tile_width, layer_tile_height);
+
+    const auto type = layer.GetType();
+    if (draw_render_layer && layer->HasRenderComponent())
+    {
+        if (type == game::TilemapLayer::Type::Render)
+            DrawRenderLayer<game::TilemapLayer_Render>(map, layer, tile_rect, tile_size, painter, transform, layer_index);
+        else if (type == game::TilemapLayer::Type::Render_DataUInt4)
+            DrawRenderLayer<game::TilemapLayer_Render_DataUInt4>(map, layer, tile_rect, tile_size, painter, transform, layer_index);
+        else if (type == game::TilemapLayer::Type::Render_DataSInt4)
+            DrawRenderLayer<game::TilemapLayer_Render_DataSInt4>(map, layer, tile_rect, tile_size, painter, transform, layer_index);
+        else if (type == game::TilemapLayer::Type::Render_DataSInt8)
+            DrawRenderLayer<game::TilemapLayer_Render_DataSInt8>(map, layer, tile_rect, tile_size, painter, transform, layer_index);
+        else if (type == game::TilemapLayer::Type::Render_DataUInt8)
+            DrawRenderLayer<game::TilemapLayer_Render_DataUInt8>(map, layer, tile_rect, tile_size, painter, transform, layer_index);
+        else if (type == game::TilemapLayer::Type::Render_DataUInt24)
+            DrawRenderLayer<game::TilemapLayer_Render_DataUInt24>(map, layer, tile_rect, tile_size, painter, transform, layer_index);
+        else if (type == game::TilemapLayer::Type::Render_DataSInt24)
+            DrawRenderLayer<game::TilemapLayer_Render_DataSInt24>(map, layer, tile_rect, tile_size, painter, transform, layer_index);
+        else BUG("Unknown render layer type.");
+    }
+    if (draw_data_layer && layer->HasDataComponent())
+    {
+        if (type == game::TilemapLayer::Type::Render_DataUInt4)
+            DrawDataLayer<game::TilemapLayer_Render_DataUInt4>(map, layer, tile_rect, tile_size, painter, transform);
+        else if (type == game::TilemapLayer::Type::Render_DataSInt4)
+            DrawDataLayer<game::TilemapLayer_Render_DataSInt4>(map, layer, tile_rect, tile_size, painter, transform);
+        else if (type == game::TilemapLayer::Type::Render_DataSInt8)
+            DrawDataLayer<game::TilemapLayer_Render_DataSInt8>(map, layer, tile_rect, tile_size, painter, transform);
+        else if (type == game::TilemapLayer::Type::Render_DataUInt8)
+            DrawDataLayer<game::TilemapLayer_Render_DataUInt8>(map, layer, tile_rect, tile_size, painter, transform);
+        else if (type == game::TilemapLayer::Type::Render_DataUInt24)
+            DrawDataLayer<game::TilemapLayer_Render_DataUInt24>(map, layer, tile_rect, tile_size, painter, transform);
+        else if (type == game::TilemapLayer::Type::Render_DataSInt24)
+            DrawDataLayer<game::TilemapLayer_Render_DataSInt24>(map, layer, tile_rect, tile_size, painter, transform);
+        else if (type == game::TilemapLayer::Type::DataSInt8)
+            DrawDataLayer<game::TilemapLayer_Data_SInt8>(map, layer, tile_rect, tile_size, painter, transform);
+        else if (type == game::TilemapLayer::Type::DataUInt8)
+            DrawDataLayer<game::TilemapLayer_Data_UInt8>(map, layer, tile_rect, tile_size, painter, transform);
+        else if (type == game::TilemapLayer::Type::DataSInt16)
+            DrawDataLayer<game::TilemapLayer_Data_SInt16>(map, layer, tile_rect, tile_size, painter, transform);
+        else if (type == game::TilemapLayer::Type::DataUInt16)
+            DrawDataLayer<game::TilemapLayer_Data_UInt16>(map, layer, tile_rect, tile_size, painter, transform);
+        else BUG("Unknown data layer type.");
+    }
+}
+
 void Renderer::Update(const EntityClass& entity, float time, float dt)
 {
     for (size_t i=0; i < entity.GetNumNodes(); ++i)
     {
-        UpdateNode<EntityNodeClass>(entity.GetNode(i), time, dt);
+        const auto& node = entity.GetNode(i);
+        if (auto* paint = base::SafeFind(mPaintNodes, node.GetId()))
+            UpdateNode<EntityNodeClass>(*paint, time, dt);
     }
 }
 
 void Renderer::Update(const EntityNodeClass& node, float time, float dt)
 {
-    UpdateNode<EntityNodeClass>(node, time, dt);
+    if (auto* paint = base::SafeFind(mPaintNodes, node.GetId()))
+        UpdateNode<EntityNodeClass>(*paint, time, dt);
 }
 
 void Renderer::Update(const Entity& entity, float time, float dt)
 {
     for (size_t i=0; i < entity.GetNumNodes(); ++i)
     {
-        UpdateNode<EntityNode>(entity.GetNode(i), time, dt);
+        const auto& node = entity.GetNode(i);
+        if (auto* paint = base::SafeFind(mPaintNodes, node.GetId()))
+            UpdateNode<EntityNode>(*paint, time, dt);
     }
 }
 
 void Renderer::Update(const EntityNode& node, float time, float dt)
 {
-    UpdateNode<EntityNode>(node, time, dt);
+    if (auto* paint = base::SafeFind(mPaintNodes, node.GetId()))
+        UpdateNode<EntityNode>(*paint, time, dt);
 }
 
 void Renderer::Update(const SceneClass& scene, float time, float dt)
@@ -161,37 +360,29 @@ void Renderer::Update(const Scene& scene, float time, float dt)
 
 void Renderer::EndFrame()
 {
-    for (auto it = mPaintNodes.begin(); it != mPaintNodes.end();)
+    if (mEditingMode)
     {
-        auto& p = it->second;
-        if (p.visited)
+        for (auto it = mPaintNodes.begin(); it != mPaintNodes.end();)
         {
-            ++it;
-            continue;
+            it->second.visited ? ++it : it = mPaintNodes.erase(it);
         }
-        it = mPaintNodes.erase(it);
     }
 }
 
 void Renderer::ClearPaintState()
 {
     mPaintNodes.clear();
+    mTilemapPalette.clear();
 }
 
-template<typename Node>
-void Renderer::UpdateNode(const Node& node, float time, float dt)
+template<typename EntityNodeType>
+void Renderer::UpdateNode(PaintNode& paint_node, float time, float dt)
 {
+    using DrawableItemType = typename EntityNodeType::DrawableItemType;
+
+    const auto& node = *std::get<const EntityNodeType*>(paint_node.entity_node);
     const auto* item = node.GetDrawable();
     const auto* text = node.GetTextItem();
-    if (!item && !text)
-        return;
-
-    using DrawableItemType = typename Node::DrawableItemType;
-
-    auto it = mPaintNodes.find(node.GetId());
-    if (it == mPaintNodes.end())
-        return;
-    auto& paint_node = it->second;
 
     gfx::Transform transform;
     transform.Scale(paint_node.world_size);
@@ -296,6 +487,8 @@ void Renderer::MapEntity(const EntityType& entity, gfx::Transform& transform)
                 paint_node.world_pos      = box.GetCenter();
                 paint_node.world_size     = box.GetSize();
                 paint_node.world_rotation = box.GetRotation();
+                paint_node.entity_node    = node;
+                paint_node.entity         = &mEntity;
             }
         }
         virtual void LeaveNode(const NodeType* node) override
@@ -314,38 +507,15 @@ void Renderer::MapEntity(const EntityType& entity, gfx::Transform& transform)
     tree.PreOrderTraverse(visitor);
 }
 
-template<typename EntityType, typename NodeType>
-void Renderer::PrimeNode(const EntityType& entity,
-                         const NodeType& node,
-                         gfx::Transform& scene,
-                         std::vector<DrawPacket>& packets,
-                         EntityDrawHook<NodeType>* hook)
+template<typename EntityType, typename EntityNodeType>
+void Renderer::CreateDrawResources(PaintNode& paint_node)
 {
-    using DrawableItemType = typename NodeType::DrawableItemType;
+    using DrawableItemType = typename EntityNodeType::DrawableItemType;
 
-    const auto* item = node.GetDrawable();
-    const auto* text = node.GetTextItem();
-    if (!item && !text)
-    {
-        if (hook)
-        {
-            scene.Push(entity.FindNodeTransform(&node));
-            hook->AppendPackets(&node, scene, packets);
-            scene.Pop();
-        }
-        return;
-    }
-    auto& paint_node = mPaintNodes[node.GetId()];
+    const auto& entity = *std::get<const EntityType*>(paint_node.entity);
+    const auto& node   = *std::get<const EntityNodeType*>(paint_node.entity_node);
 
-    //gfx::Transform transform(paint_node.transform);
-    gfx::Transform transform;
-    transform.Scale(paint_node.world_size);
-    transform.Rotate(paint_node.world_rotation);
-    transform.Translate(paint_node.world_pos);
-
-    transform.Push(node.GetModelTransform());
-
-    if (text)
+    if (const auto* text = node.GetTextItem())
     {
         const auto& node_size = node.GetSize();
         const auto text_raster_width  = text->GetRasterWidth();
@@ -398,31 +568,8 @@ void Renderer::PrimeNode(const EntityType& entity,
             auto klass = mClassLib->FindDrawableClassById(drawable);
             paint_node.text_drawable = gfx::CreateDrawableInstance(klass);
         }
-
-        bool visible_now = true;
-        if (text->TestFlag(TextItemClass::Flags::BlinkText))
-        {
-            const auto fps = 1.5;
-            const auto full_period = 2.0 / fps;
-            const auto half_period = full_period * 0.5;
-            const auto time = fmodf(base::GetTime(), full_period);
-            if (time >= half_period)
-                visible_now = false;
-        }
-        if (text->TestFlag(TextItemClass::Flags::VisibleInGame) && visible_now)
-        {
-            DrawPacket packet;
-            packet.drawable  = paint_node.text_drawable;
-            packet.material  = paint_node.text_material;
-            packet.transform = transform.GetAsMatrix();
-            packet.pass      = RenderPass::Draw;
-            packet.layer     = text->GetLayer();
-            if (!hook || (hook && hook->InspectPacket(&node, packet)))
-                packets.push_back(std::move(packet));
-        }
     }
-
-    if (item)
+    if (const auto* item = node.GetDrawable())
     {
         const auto& material = item->GetMaterialId();
         const auto& drawable = item->GetDrawableId();
@@ -448,6 +595,13 @@ void Renderer::PrimeNode(const EntityType& entity,
                 WARN("No such drawable class '%1' found for '%2/%3'", drawable, entity.GetName(), node.GetName());
             if (paint_node.item_drawable)
             {
+                gfx::Transform transform;
+                transform.Scale(paint_node.world_size);
+                transform.Rotate(paint_node.world_rotation);
+                transform.Translate(paint_node.world_pos);
+
+                transform.Push(node.GetModelTransform());
+
                 const auto& model = transform.GetAsMatrix();
                 gfx::Drawable::Environment env; // todo:
                 env.model_matrix = &model;
@@ -480,6 +634,55 @@ void Renderer::PrimeNode(const EntityType& entity,
                 paint_node.item_drawable->SetCulling(gfx::Drawable::Culling::Front);
             else paint_node.item_drawable->SetCulling(gfx::Drawable::Culling::Back);
         }
+    }
+}
+
+template<typename EntityType, typename EntityNodeType>
+void Renderer::GenerateDrawPackets(PaintNode& paint_node,
+                                   std::vector<DrawPacket>& packets,
+                                   EntityDrawHook<EntityNodeType>* hook)
+{
+    using DrawableItemType = typename EntityNodeType::DrawableItemType;
+
+    const auto& entity = *std::get<const EntityType*>(paint_node.entity);
+    const auto& node   = *std::get<const EntityNodeType*>(paint_node.entity_node);
+    const bool entity_visible = entity.TestFlag(EntityType::Flags::VisibleInGame);
+
+    gfx::Transform transform;
+    transform.Scale(paint_node.world_size);
+    transform.Rotate(paint_node.world_rotation);
+    transform.Translate(paint_node.world_pos);
+
+    transform.Push(node.GetModelTransform());
+
+    if (const auto* text = node.GetTextItem())
+    {
+        bool visible_now = true;
+        if (text->TestFlag(TextItemClass::Flags::BlinkText))
+        {
+            const auto fps = 1.5;
+            const auto full_period = 2.0 / fps;
+            const auto half_period = full_period * 0.5;
+            const auto time = fmodf(base::GetTime(), full_period);
+            if (time >= half_period)
+                visible_now = false;
+        }
+        if (text->TestFlag(TextItemClass::Flags::VisibleInGame) && entity_visible && visible_now)
+        {
+            DrawPacket packet;
+            packet.drawable  = paint_node.text_drawable;
+            packet.material  = paint_node.text_material;
+            packet.transform = transform.GetAsMatrix();
+            packet.pass      = RenderPass::Draw;
+            packet.entity_node_layer = text->GetLayer();
+            packet.scene_node_layer  = entity.GetLayer();
+            if (!hook || hook->InspectPacket(&node, packet))
+                packets.push_back(std::move(packet));
+        }
+    }
+
+    if (const auto* item = node.GetDrawable())
+    {
         if (item->TestFlag(DrawableItemType::Flags::FlipHorizontally))
         {
             transform.Push();
@@ -493,15 +696,16 @@ void Renderer::PrimeNode(const EntityType& entity,
             transform.Translate(0.0f, 1.0f);
         }
         // if it doesn't render then no draw packets are generated
-        if (item->TestFlag(DrawableItemType::Flags::VisibleInGame))
+        if (item->TestFlag(DrawableItemType::Flags::VisibleInGame) && entity_visible)
         {
             DrawPacket packet;
             packet.material  = paint_node.item_material;
             packet.drawable  = paint_node.item_drawable;
-            packet.layer     = item->GetLayer();
-            packet.pass      = item->GetRenderPass();
             packet.transform = transform.GetAsMatrix();
-            if (!hook || (hook && hook->InspectPacket(&node , packet)))
+            packet.pass      = item->GetRenderPass();
+            packet.entity_node_layer = item->GetLayer();
+            packet.scene_node_layer  = entity.GetLayer();
+            if (!hook || hook->InspectPacket(&node , packet))
                 packets.push_back(std::move(packet));
         }
         if (item->TestFlag(DrawableItemType::Flags::FlipHorizontally))
@@ -524,57 +728,223 @@ void Renderer::DrawPackets(gfx::Painter& painter, std::vector<DrawPacket>& packe
 {
     // the layer value is negative but for the indexing below
     // we must have positive values only.
-    int first_layer_index = 0;
+    int first_entity_node_layer_index = 0;
+    int first_scene_node_layer_index  = 0;
     for (auto &packet : packets)
     {
-        first_layer_index = std::min(first_layer_index, packet.layer);
+        first_entity_node_layer_index = std::min(first_entity_node_layer_index, packet.entity_node_layer);
+        first_scene_node_layer_index  = std::min(first_scene_node_layer_index, packet.scene_node_layer);
     }
     // offset the layers.
     for (auto &packet : packets)
     {
-        packet.layer += std::abs(first_layer_index);
+        packet.entity_node_layer += std::abs(first_entity_node_layer_index);
+        packet.scene_node_layer  += std::abs(first_scene_node_layer_index);
     }
 
     struct Layer {
         std::vector<gfx::Painter::DrawShape> draw_list;
         std::vector<gfx::Painter::MaskShape> mask_list;
     };
-    std::vector<Layer> layers;
+    // Each entity in the scene is assigned to a scene/entity layer and each
+    // entity node within an entity is assigned to an entity layer.
+    // Thus, to have the right ordering both indices of each
+    // render packet must be considered!
+    std::vector<std::vector<Layer>> layers;
 
-    for (auto &packet : packets)
+    for (auto& packet : packets)
     {
         if (packet.pass == RenderPass::Draw && !packet.material)
             continue;
         else if (!packet.drawable)
             continue;
 
-        const auto layer_index = packet.layer;
-        if (layer_index >= layers.size())
-            layers.resize(layer_index + 1);
+        const auto scene_layer_index = packet.scene_node_layer;
+        if (scene_layer_index >= layers.size())
+            layers.resize(scene_layer_index + 1);
 
-        Layer &layer = layers[layer_index];
+        auto& entity_scene_layer = layers[scene_layer_index];
+
+        const auto entity_node_layer_index = packet.entity_node_layer;
+        if (entity_node_layer_index >= entity_scene_layer.size())
+            entity_scene_layer.resize(entity_node_layer_index + 1);
+
+        Layer& entity_layer = entity_scene_layer[entity_node_layer_index];
         if (packet.pass == RenderPass::Draw)
         {
             gfx::Painter::DrawShape shape;
             shape.transform = &packet.transform;
             shape.drawable = packet.drawable.get();
             shape.material = packet.material.get();
-            layer.draw_list.push_back(shape);
+            entity_layer.draw_list.push_back(shape);
         }
         else if (packet.pass == RenderPass::Mask)
         {
             gfx::Painter::MaskShape shape;
             shape.transform = &packet.transform;
             shape.drawable = packet.drawable.get();
-            layer.mask_list.push_back(shape);
+            entity_layer.mask_list.push_back(shape);
         }
     }
-    for (const auto &layer : layers)
+    for (const auto& scene_layer : layers)
     {
-        if (layer.mask_list.empty())
-            painter.Draw(layer.draw_list);
-        else painter.Draw(layer.draw_list, layer.mask_list);
+        for (const auto& entity_layer : scene_layer)
+        {
+            entity_layer.mask_list.empty()
+                ? painter.Draw(entity_layer.draw_list)
+                : painter.Draw(entity_layer.draw_list, entity_layer.mask_list);
+        }
+    }
+}
+
+template<typename LayerType>
+void Renderer::DrawRenderLayer(const game::Tilemap& map,
+                               const game::TilemapLayer& layer,
+                               const game::URect& tile_rect,
+                               const game::FSize& tile_size,
+                               gfx::Painter& painter,
+                               gfx::Transform& transform,
+                               std::size_t layer_index)
+{
+    using TileType = typename LayerType::TileType;
+    using LayerTraits = game::detail::TilemapLayerTraits<TileType>;
+
+    const auto* ptr = game::TilemapLayerCast<LayerType>(&layer);
+
+    const auto tile_row = tile_rect.GetY();
+    const auto tile_col = tile_rect.GetX();
+    const auto max_row = tile_rect.GetHeight();
+    const auto max_col = tile_rect.GetWidth();
+
+    // batches of tiles are indexed by the tile material.
+    std::vector<gfx::TileBatch> tiles;
+
+    for (unsigned row=tile_row; row<max_row; ++row)
+    {
+        for (unsigned col=tile_col; col<max_col; ++col)
+        {
+            // the tiles index value is an index into the tile map
+            // sprite palette.
+            const auto index = ptr->GetTile(row, col).index;
+            // special index max means "no value". this is needed in order
+            // to be able to have "holes" in some layer and let the layer
+            // below show through. could have used zero but that would
+            // make the palette indexing more inconvenient.
+            if (index == LayerTraits::MaxPaletteIndex)
+                continue;
+
+            gfx::TileBatch::Tile tile;
+            tile.pos.x = col;
+            tile.pos.y = row;
+
+            if (index >= tiles.size())
+                tiles.resize(index+1);
+
+            tiles[index].AddTile(std::move(tile));
+        }
+    }
+
+    if (layer_index >= mTilemapPalette.size())
+        mTilemapPalette.resize(layer_index+1);
+
+    auto& layer_palette = mTilemapPalette[layer_index];
+
+    // the index functions as an index into the layer's
+    // material layer palette.
+    for (size_t i=0; i<tiles.size(); ++i)
+    {
+        // find the material ID for this index from the layer.
+        const auto& material_id = layer.GetPaletteMaterialId(i);
+
+        // allocate new tile map material node.
+        if (i == layer_palette.size())
+            layer_palette.resize(i+1);
+
+        auto& layer_node = layer_palette[i];
+
+        if (layer_node.material_id != material_id)
+        {
+            layer_node.material_id = material_id;
+            layer_node.material.reset();
+            if (layer_node.material_id.empty())
+            {
+                WARN("Tilemap has no material set for layer material palette index. [map='%1', layer='%2', index=%3]",
+                     map.GetClassName(), layer.GetClassName(), i);
+                continue;
+            }
+            auto klass = mClassLib->FindMaterialClassById(material_id);
+            if (!klass)
+            {
+                WARN("No such tilemap material class found. [map='%1', layer='%2', class='%2']",
+                     map.GetClassName(), layer.GetClassName(), material_id);
+                continue;
+            }
+            layer_node.material = gfx::CreateMaterialInstance(klass);
+        }
+        if (!layer_node.material)
+            continue;
+
+        auto& batch = tiles[i];
+        batch.SetTileWidth(tile_size.GetWidth());
+        batch.SetTileHeight(tile_size.GetHeight());
+        painter.Draw(batch, transform, *layer_node.material);
+    }
+}
+
+template<typename LayerType>
+void Renderer::DrawDataLayer(const game::Tilemap& map,
+                             const game::TilemapLayer& layer,
+                             const game::URect& tile_rect,
+                             const game::FSize& tile_size,
+                             gfx::Painter& painter,
+                             gfx::Transform& transform)
+{
+    using TileType = typename LayerType::TileType;
+    using LayerTraits = game::detail::TilemapLayerTraits<TileType>;
+
+    const auto* ptr = game::TilemapLayerCast<LayerType>(&layer);
+
+    const auto tile_row = tile_rect.GetY();
+    const auto tile_col = tile_rect.GetX();
+    const auto max_row = tile_rect.GetHeight();
+    const auto max_col = tile_rect.GetWidth();
+
+    // batches of tiles are indexed by the tile material.
+    std::vector<gfx::TileBatch> tiles;
+
+    for (unsigned row=tile_row; row<max_row; ++row)
+    {
+        for (unsigned col=tile_col; col<max_col; ++col)
+        {
+            // the tiles index value is an index into the tile map
+            // sprite palette.
+            const auto value = NormalizeValue(ptr->GetTile(row, col));
+            const auto index = value * 255u;
+
+            gfx::TileBatch::Tile tile;
+            tile.pos.x = col;
+            tile.pos.y = row;
+
+            if (index >= tiles.size())
+                tiles.resize(index+1);
+            tiles[index].AddTile(std::move(tile));
+        }
+    }
+    for (size_t i=0; i<tiles.size(); ++i)
+    {
+        auto& batch = tiles[i];
+        batch.SetTileWidth(tile_size.GetWidth());
+        batch.SetTileHeight(tile_size.GetHeight());
+
+        const auto color_val = i / 255.0f;
+        const auto r = color_val;
+        const auto g = color_val;
+        const auto b = color_val;
+        const auto a = 1.0f;
+        const gfx::Color4f color(r, g, b, a);
+        painter.Draw(batch, transform, gfx::CreateMaterialFromColor(color));
     }
 }
 
 } // namespace
+

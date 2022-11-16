@@ -187,8 +187,6 @@ MaterialWidget::MaterialWidget(app::Workspace* workspace, const app::Resource& r
 
     ApplyShaderDescription();
     GetMaterialProperties();
-
-    setWindowTitle(resource.GetName());
 }
 
 MaterialWidget::~MaterialWidget()
@@ -204,6 +202,21 @@ QString MaterialWidget::GetId() const
 void MaterialWidget::Initialize(const UISettings& settings)
 {
     SetValue(mUI.zoom, settings.zoom);
+}
+
+void MaterialWidget::SetViewerMode()
+{
+    SetVisible(mUI.baseProperties,    false);
+    SetVisible(mUI.builtInProperties, false);
+    SetVisible(mUI.gradientMap,       false);
+    SetVisible(mUI.textureCoords,     false);
+    SetVisible(mUI.customUniforms,    false);
+    SetVisible(mUI.customSamplers,    false);
+    SetVisible(mUI.textureFilters,    false);
+    SetVisible(mUI.textureMaps,       false);
+    SetVisible(mUI.textureProp,       false);
+    SetVisible(mUI.textureRect,       false);
+    on_actionPlay_triggered();
 }
 
 void MaterialWidget::AddActions(QToolBar& bar)
@@ -242,8 +255,6 @@ bool MaterialWidget::LoadState(const Settings& settings)
 
     ApplyShaderDescription();
     GetMaterialProperties();
-
-    setWindowTitle(mUI.materialName->text());
     return true;
 }
 
@@ -410,8 +421,8 @@ void MaterialWidget::on_actionSave_triggered()
 
     mWorkspace->SaveResource(resource);
     mOriginalHash = mMaterial->GetHash();
-    setWindowTitle(GetValue(mUI.materialName));
 }
+
 void MaterialWidget::on_actionRemoveTexture_triggered()
 {
     // make sure currentRowChanged is blocked while we're deleting shit.
@@ -755,7 +766,7 @@ void MaterialWidget::on_btnSelectTextureRect_clicked()
         rect   = custom->FindTextureSourceRect(source);
     }
 
-    DlgTextureRect dlg(this, rect, source->Clone());
+    DlgTextureRect dlg(this, mWorkspace, rect, source->Clone());
     if (dlg.exec() == QDialog::Rejected)
         return;
 
@@ -1595,7 +1606,7 @@ void MaterialWidget::GetMaterialProperties()
             else BUG("No such uniform in material. UI and material are out of sync.");
         }
 
-        std::vector<ListItem> textures;
+        std::vector<ResourceListItem> textures;
         for (auto* widget : mSamplers)
         {
             widget->SetText("");
@@ -1607,7 +1618,7 @@ void MaterialWidget::GetMaterialProperties()
                 {
                     if (const auto* source = sprite->GetTextureSource(i))
                     {
-                        ListItem item;
+                        ResourceListItem item;
                         item.id   = app::FromUtf8(source->GetId());
                         item.name = app::FromUtf8(source->GetName());
                         textures.push_back(item);
@@ -1623,7 +1634,7 @@ void MaterialWidget::GetMaterialProperties()
             {
                 if (const auto* source = texture->GetTextureSource())
                 {
-                    ListItem item;
+                    ResourceListItem item;
                     item.id   = app::FromUtf8(source->GetId());
                     item.name = app::FromUtf8(source->GetName());
                     textures.push_back(item);
@@ -1695,10 +1706,10 @@ void MaterialWidget::GetMaterialProperties()
         SetValue(mUI.velocityY, ptr->GetTextureVelocityY());
         SetValue(mUI.velocityZ, ptr->GetTextureVelocityZ());
 
-        std::vector<ListItem> textures;
+        std::vector<ResourceListItem> textures;
         if (auto* source = ptr->GetTextureSource())
         {
-            ListItem item;
+            ResourceListItem item;
             item.id   = app::FromUtf8(source->GetId());
             item.name = app::FromUtf8(source->GetName());
             textures.push_back(item);
@@ -1751,11 +1762,11 @@ void MaterialWidget::GetMaterialProperties()
         SetValue(mUI.chkBlendFrames, ptr->GetBlendFrames());
         SetValue(mUI.chkLooping, ptr->IsLooping());
 
-        std::vector<ListItem> textures;
+        std::vector<ResourceListItem> textures;
         for (size_t i=0; i<ptr->GetNumTextures(); ++i)
         {
             const auto* source = ptr->GetTextureSource(i);
-            ListItem item;
+            ResourceListItem item;
             item.id   = app::FromUtf8(source->GetId());
             item.name = app::FromUtf8(source->GetName());
             textures.push_back(item);

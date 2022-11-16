@@ -336,7 +336,6 @@ ParticleEditorWidget::ParticleEditorWidget(app::Workspace* workspace, const app:
     on_space_currentIndexChanged(0);
     on_direction_currentIndexChanged(0);
     on_canExpire_stateChanged(0);
-    setWindowTitle(name);
 }
 
 ParticleEditorWidget::~ParticleEditorWidget()
@@ -354,6 +353,20 @@ void ParticleEditorWidget::Initialize(const UISettings& settings)
     SetValue(mUI.zoom,        settings.zoom);
     SetValue(mUI.cmbGrid,     settings.grid);
     SetValue(mUI.chkShowGrid, settings.show_grid);
+}
+
+void ParticleEditorWidget::SetViewerMode()
+{
+    SetVisible(mUI.baseProperties,     false);
+    SetVisible(mUI.dirSector,          false);
+    SetVisible(mUI.localSpace,         false);
+    SetVisible(mUI.localEmitter,       false);
+    SetVisible(mUI.transform,          false);
+    SetVisible(mUI.particleProperties, false);
+    SetVisible(mUI.sizeDerivatives,    false);
+    SetVisible(mUI.alphaDerivatives,   false);
+    mViewMode = true;
+    on_actionPlay_triggered();
 }
 
 void ParticleEditorWidget::AddActions(QToolBar& bar)
@@ -440,7 +453,6 @@ bool ParticleEditorWidget::LoadState(const Settings& settings)
     on_space_currentIndexChanged(0);
     on_direction_currentIndexChanged(0);
     on_canExpire_stateChanged(0);
-    setWindowTitle(GetValue(mUI.name));
     return true;
 }
 
@@ -536,7 +548,10 @@ void ParticleEditorWidget::Update(double secs)
         SetEnabled(mUI.actionPlay, true);
         mEngine.reset();
         mMaterial.reset();
-        return;
+        if (mViewMode)
+        {
+            on_actionPlay_triggered();
+        }
     }
 }
 
@@ -606,7 +621,6 @@ void ParticleEditorWidget::on_actionSave_triggered()
 
     mWorkspace->SaveResource(particle_resource);
     mOriginalHash = mClass->GetHash();
-    setWindowTitle(GetValue(mUI.name));
 }
 
 void ParticleEditorWidget::SetParams()

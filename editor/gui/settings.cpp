@@ -57,15 +57,20 @@ bool Settings::Save()
     return mSettings->Save();
 }
 
-bool Settings::GetValue(const QString& module, const QString& key, std::size_t* out) const
+bool Settings::GetValue(const QString& module, const app::PropertyKey& key, std::size_t* out) const
 {
-    const auto& value = mSettings->GetValue(module + "/" + key);
-    if (!value.isValid())
+    const auto& lo_var = mSettings->GetValue(module + "/" + key + "_lo");
+    const auto& hi_var = mSettings->GetValue(module + "/" + key + "_hi");
+    if (!lo_var.isValid()  || !hi_var.isValid())
         return false;
-    *out = qvariant_cast<quint64>(value);
+
+    static_assert(sizeof(uint) == 4);
+    const uint hi = hi_var.toUInt();
+    const uint lo = lo_var.toUInt();
+    *out = size_t(hi) << 32 | size_t(lo);
     return true;
 }
-bool Settings::GetValue(const QString& module, const QString& key, std::string* out) const
+bool Settings::GetValue(const QString& module, const app::PropertyKey& key, std::string* out) const
 {
     const auto& value = mSettings->GetValue(module + "/" + key);
     if (!value.isValid())
@@ -73,7 +78,7 @@ bool Settings::GetValue(const QString& module, const QString& key, std::string* 
     *out = app::ToUtf8(qvariant_cast<QString>(value));
     return true;
 }
-bool Settings::GetValue(const QString& module, const QString& key, data::JsonObject* out) const
+bool Settings::GetValue(const QString& module, const app::PropertyKey& key, data::JsonObject* out) const
 {
     const auto& value = mSettings->GetValue(module + "/" + key);
     if (!value.isValid())
@@ -83,7 +88,7 @@ bool Settings::GetValue(const QString& module, const QString& key, data::JsonObj
     return ok;
 }
 
-bool Settings::GetValue(const QString& module, const QString& key, QByteArray* out) const
+bool Settings::GetValue(const QString& module, const app::PropertyKey& key, QByteArray* out) const
 {
     const auto& value = mSettings->GetValue(module + "/" + key);
     if (!value.isValid())
@@ -95,16 +100,54 @@ bool Settings::GetValue(const QString& module, const QString& key, QByteArray* o
     return true;
 }
 
-void Settings::SetValue(const QString& module, const QString& key, const data::JsonObject& json)
+bool Settings::GetValue(const QString& module, const app::PropertyKey& key, QJsonObject* out) const
+{
+    QByteArray buff;
+    if (!GetValue(module, key, &buff))
+        return false;
+
+    QJsonDocument doc = QJsonDocument::fromJson(buff);
+    if (doc.isNull())
+        return false;
+    *out = doc.object();
+    return true;
+}
+
+void Settings::SetValue(const QString& module, const app::PropertyKey& key, const std::string& value)
+{
+    SetValue(module, key, app::FromUtf8(value));
+}
+
+void Settings::SetValue(const QString& module, const app::PropertyKey& key, std::size_t value)
+{
+    static_assert(sizeof(value) == 8);
+    static_assert(sizeof(uint) == 4);
+    uint hi = 0;
+    uint lo = 0;
+    hi = (value >> 32) & 0xffffffff;
+    lo = (value >> 0)  & 0xffffffff;
+    mSettings->SetValue(module + "/" + key + "_lo", lo);
+    mSettings->SetValue(module + "/" + key + "_hi", hi);
+}
+
+void Settings::SetValue(const QString& module, const app::PropertyKey& key, const data::JsonObject& json)
 {
     mSettings->SetValue(module + "/" + key, app::FromUtf8(base64::Encode(json.ToString())));
 }
 
-void Settings::SetValue(const QString& module, const QString& key, const QByteArray& bytes)
+void Settings::SetValue(const QString& module, const app::PropertyKey& key, const QByteArray& bytes)
 {
     mSettings->SetValue(module + "/" + key, QString::fromLatin1(bytes.toBase64()));
 }
-QByteArray Settings::GetValue(const QString& module, const QString& key, const QByteArray& defaultValue) const
+
+void Settings::SetValue(const QString& module, const app::PropertyKey& key, const QJsonObject& json)
+{
+    QJsonDocument doc(json);
+    const QByteArray& bytes = doc.toJson();
+    SetValue(module, key, bytes);
+}
+
+QByteArray Settings::GetValue(const QString& module, const app::PropertyKey& key, const QByteArray& defaultValue) const
 {
     const auto& value = mSettings->GetValue(module + "/" + key);
     if (!value.isValid())
@@ -115,12 +158,12 @@ QByteArray Settings::GetValue(const QString& module, const QString& key, const Q
     return QByteArray::fromBase64(str.toLatin1());
 }
 
-std::string Settings::GetValue(const QString& module, const QString& key, const std::string& defaultValue) const
+std::string Settings::GetValue(const QString& module, const app::PropertyKey& key, const std::string& defaultValue) const
 {
     const QString& temp = GetValue(module, key, app::FromUtf8(defaultValue));
     return app::ToUtf8(temp);
 }
-std::size_t Settings::GetValue(const QString& module, const QString& key, std::size_t defaultValue) const
+std::size_t Settings::GetValue(const QString& module, const app::PropertyKey& key, std::size_t defaultValue) const
 {
     const auto& value = mSettings->GetValue(module + "/" + key);
     if (!value.isValid())

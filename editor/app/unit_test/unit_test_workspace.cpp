@@ -307,6 +307,7 @@ void unit_test_packing_basic()
     TEST_REQUIRE(d.mkpath("fonts"));
     TEST_REQUIRE(d.mkpath("ui"));
     TEST_REQUIRE(app::WriteTextFile("shaders/es2/my_material.glsl", "my_material.glsl"));
+    TEST_REQUIRE(app::WriteTextFile("shaders/es2/my_material.json", "my_material.json"));
     // setup dummy scripts this one is global (outside the workspace tree)
     TEST_REQUIRE(app::WriteTextFile("lua/game_script.lua", "game_script.lua"));
     TEST_REQUIRE(app::WriteTextFile("audio/music.mp3", "music.mp3"));
@@ -433,7 +434,7 @@ R"(
     resources.push_back(&workspace.GetUserDefinedResource(5));
     resources.push_back(&workspace.GetUserDefinedResource(6));
     resources.push_back(&workspace.GetUserDefinedResource(7));
-    TEST_REQUIRE(workspace.PackContent(resources, options));
+    TEST_REQUIRE(workspace.BuildReleasePackage(resources, options));
 
     // in the output folder we should have content.json, config.json
     // and the shaders copied into shaders/es2/
@@ -447,10 +448,15 @@ R"(
     // Font files should be copied into fonts/
     TEST_REQUIRE(app::ReadTextFile("TestPackage/test/fonts/font.otf") == "font.otf");
     // UI style files should be copied into ui/
-    TEST_REQUIRE(app::ReadTextFile("TestPackage/test/ui/style.json") == style);
+    // the UI style is rewritten when the resource references are re-mapped and thus
+    // may not be the exact same string as what was originally written.
+    const auto& style_string = app::ReadTextFile("TestPackage/test/ui/style.json");
+    TEST_REQUIRE(style_string.contains("materials"));
+    TEST_REQUIRE(style_string.contains("widget/background"));
+    TEST_REQUIRE(style_string.contains("widget/border-width"));
 
     auto loader = engine::JsonFileClassLoader::Create();
-    loader->LoadFromFile("TestPackage/test/content.json");
+    loader->LoadClassesFromFile("TestPackage/test/content.json");
     TEST_REQUIRE(loader->FindMaterialClassById(material.GetId()));
     TEST_REQUIRE(loader->FindDrawableClassById(poly.GetId()));
     TEST_REQUIRE(loader->FindDrawableClassById(particles.GetId()));
@@ -475,7 +481,7 @@ R"(
     DeleteDir("TestPackage");
     options.write_config_file = false;
     options.write_content_file = false;
-    workspace.PackContent(resources, options);
+    workspace.BuildReleasePackage(resources, options);
     TEST_REQUIRE(!base::FileExists("TestPackage/test/content.json"));
     TEST_REQUIRE(!base::FileExists("TestPackage/config.json"));
 }
@@ -527,7 +533,7 @@ void unit_test_packing_texture_composition(unsigned padding)
         // select the resources.
         std::vector<const app::Resource *> resources;
         resources.push_back(&workspace.GetUserDefinedResource(0));
-        TEST_REQUIRE(workspace.PackContent(resources, options));
+        TEST_REQUIRE(workspace.BuildReleasePackage(resources, options));
 
         gfx::Image generated;
         TEST_REQUIRE(generated.Load("TestPackage/textures/test_bitmap0.png"));
@@ -566,7 +572,7 @@ void unit_test_packing_texture_composition(unsigned padding)
         // select the resources.
         std::vector<const app::Resource *> resources;
         resources.push_back(&workspace.GetUserDefinedResource(0));
-        TEST_REQUIRE(workspace.PackContent(resources, options));
+        TEST_REQUIRE(workspace.BuildReleasePackage(resources, options));
 
         gfx::Image generated;
         TEST_REQUIRE(generated.Load("TestPackage/textures/Generated_0.png"));
@@ -605,7 +611,7 @@ void unit_test_packing_texture_composition(unsigned padding)
         // select the resources.
         std::vector<const app::Resource *> resources;
         resources.push_back(&workspace.GetUserDefinedResource(0));
-        TEST_REQUIRE(workspace.PackContent(resources, options));
+        TEST_REQUIRE(workspace.BuildReleasePackage(resources, options));
 
         gfx::Image img;
         TEST_REQUIRE(img.Load("TestPackage/textures/test_bitmap0.png"));
@@ -641,7 +647,7 @@ void unit_test_packing_texture_composition(unsigned padding)
         // select the resources.
         std::vector<const app::Resource *> resources;
         resources.push_back(&workspace.GetUserDefinedResource(0));
-        TEST_REQUIRE(workspace.PackContent(resources, options));
+        TEST_REQUIRE(workspace.BuildReleasePackage(resources, options));
 
         gfx::Image img;
         TEST_REQUIRE(img.Load("TestPackage/textures/test_bitmap3.png"));
@@ -674,7 +680,7 @@ void unit_test_packing_texture_composition(unsigned padding)
         // select the resources.
         std::vector<const app::Resource *> resources;
         resources.push_back(&workspace.GetUserDefinedResource(0));
-        TEST_REQUIRE(workspace.PackContent(resources, options));
+        TEST_REQUIRE(workspace.BuildReleasePackage(resources, options));
 
         gfx::Image img;
         TEST_REQUIRE(img.Load("TestPackage/textures/test_bitmap3.png"));
@@ -725,7 +731,7 @@ void unit_test_packing_texture_composition(unsigned padding)
         std::vector<const app::Resource *> resources;
         resources.push_back(&workspace.GetUserDefinedResource(0));
         resources.push_back(&workspace.GetUserDefinedResource(1));
-        TEST_REQUIRE(workspace.PackContent(resources, options));
+        TEST_REQUIRE(workspace.BuildReleasePackage(resources, options));
 
         // bitmap0 and bitmap1 should only be copied once and combined
         // with bitmap2. Bitmap3 is too large to pack.
@@ -782,7 +788,7 @@ void unit_test_packing_texture_composition(unsigned padding)
         std::vector<const app::Resource *> resources;
         resources.push_back(&workspace.GetUserDefinedResource(0));
         resources.push_back(&workspace.GetUserDefinedResource(1));
-        TEST_REQUIRE(workspace.PackContent(resources, options));
+        TEST_REQUIRE(workspace.BuildReleasePackage(resources, options));
 
         gfx::Image img;
         TEST_REQUIRE(img.Load("TestPackage/textures/test_bitmap0.png"));
@@ -865,7 +871,7 @@ void unit_test_packing_texture_composition_format()
         // select the resources.
         std::vector<const app::Resource *> resources;
         resources.push_back(&workspace.GetUserDefinedResource(0));
-        TEST_REQUIRE(workspace.PackContent(resources, options));
+        TEST_REQUIRE(workspace.BuildReleasePackage(resources, options));
 
         // todo: assuming a specific order in which the textures are generated. this needs to be fixed.
 
@@ -949,10 +955,10 @@ void unit_test_packing_texture_composition_rects(unsigned padding)
         // select the resources.
         std::vector<const app::Resource *> resources;
         resources.push_back(&workspace.GetUserDefinedResource(0));
-        TEST_REQUIRE(workspace.PackContent(resources, options));
+        TEST_REQUIRE(workspace.BuildReleasePackage(resources, options));
 
         auto loader = engine::JsonFileClassLoader::Create();
-        loader->LoadFromFile("TestPackage/content.json");
+        loader->LoadClassesFromFile("TestPackage/content.json");
         auto mat = loader->FindMaterialClassById(material.GetId());
         const auto& rect = mat->AsTexture()->GetTextureRect();
         TEST_REQUIRE(rect == gfx::FRect(0.0f, 0.0f, 1.0f, 1.0f));
@@ -985,10 +991,10 @@ void unit_test_packing_texture_composition_rects(unsigned padding)
         // select the resources.
         std::vector<const app::Resource *> resources;
         resources.push_back(&workspace.GetUserDefinedResource(0));
-        TEST_REQUIRE(workspace.PackContent(resources, options));
+        TEST_REQUIRE(workspace.BuildReleasePackage(resources, options));
 
         auto loader = engine::JsonFileClassLoader::Create();
-        loader->LoadFromFile("TestPackage/content.json");
+        loader->LoadClassesFromFile("TestPackage/content.json");
         auto mat = loader->FindMaterialClassById(material.GetId());
         const auto& rect = mat->AsTexture()->GetTextureRect();
         TEST_REQUIRE(rect == gfx::FRect(0.0f, 0.0f, 0.5f, 0.5f));
@@ -1025,7 +1031,7 @@ void unit_test_packing_texture_composition_rects(unsigned padding)
         // select the resources.
         std::vector<const app::Resource *> resources;
         resources.push_back(&workspace.GetUserDefinedResource(0));
-        TEST_REQUIRE(workspace.PackContent(resources, options));
+        TEST_REQUIRE(workspace.BuildReleasePackage(resources, options));
 
         gfx::Image img;
         TEST_REQUIRE(img.Load("TestPackage/textures/Generated_0.png"));
@@ -1037,7 +1043,7 @@ void unit_test_packing_texture_composition_rects(unsigned padding)
         TEST_REQUIRE(CountPixels(bmp, gfx::Color::Yellow)  >= 32*32);
 
         auto loader = engine::JsonFileClassLoader::Create();
-        loader->LoadFromFile("TestPackage/content.json");
+        loader->LoadClassesFromFile("TestPackage/content.json");
         const auto& mat = loader->FindMaterialClassById(material.GetId());
         const auto& rect0 = mat->AsSprite()->GetTextureRect(0);
         const auto& rect1 = mat->AsSprite()->GetTextureRect(1);
@@ -1094,12 +1100,12 @@ void unit_test_packing_texture_name_collision()
     std::vector<const app::Resource *> resources;
     resources.push_back(&workspace.GetUserDefinedResource(0));
     resources.push_back(&workspace.GetUserDefinedResource(1));
-    TEST_REQUIRE(workspace.PackContent(resources, options));
+    TEST_REQUIRE(workspace.BuildReleasePackage(resources, options));
 
     // verify output
     auto cloader = engine::JsonFileClassLoader::Create();
     auto floader = engine::FileResourceLoader::Create();
-    cloader->LoadFromFile("TestPackage/content.json");
+    cloader->LoadClassesFromFile("TestPackage/content.json");
     floader->SetContentPath("TestPackage");
     gfx::SetResourceLoader(floader.get());
 
@@ -1198,10 +1204,16 @@ void unit_test_packing_ui_style_resources()
     // select the resources.
     std::vector<const app::Resource*> resources;
     resources.push_back(&workspace.GetUserDefinedResource(0));
-    TEST_REQUIRE(workspace.PackContent(resources, options));
+    TEST_REQUIRE(workspace.BuildReleasePackage(resources, options));
 
     // UI style files should be copied into ui/
-    TEST_REQUIRE(app::ReadTextFile("TestPackage/test/ui/style.json") == style);
+    // the UI style is rewritten when the resource references are re-mapped and thus
+    // may not be the exact same string as what was originally written.
+    const auto& style_string = app::ReadTextFile("TestPackage/test/ui/style.json");
+    TEST_REQUIRE(style_string.contains("properties"));
+    TEST_REQUIRE(style_string.contains("materials"));
+    TEST_REQUIRE(style_string.contains("pck://fonts/style_font.otf"));
+    TEST_REQUIRE(!style_string.contains("ws://fonts/style_font.otf"));
     // UI Font files should be copied into fonts/
     TEST_REQUIRE(app::ReadTextFile("TestPackage/test/fonts/widget_font.otf") == "widget_font.otf");
     TEST_REQUIRE(app::ReadTextFile("TestPackage/test/fonts/window_font.otf") == "window_font.otf");
@@ -1253,12 +1265,12 @@ void unit_test_packing_texture_name_collision_resample_bug()
     std::vector<const app::Resource *> resources;
     resources.push_back(&workspace.GetUserDefinedResource(0));
     resources.push_back(&workspace.GetUserDefinedResource(1));
-    TEST_REQUIRE(workspace.PackContent(resources, options));
+    TEST_REQUIRE(workspace.BuildReleasePackage(resources, options));
 
     // verify output
     auto cloader = engine::JsonFileClassLoader::Create();
     auto floader = engine::FileResourceLoader::Create();
-    cloader->LoadFromFile("TestPackage/content.json");
+    cloader->LoadClassesFromFile("TestPackage/content.json");
     floader->SetContentPath("TestPackage");
     gfx::SetResourceLoader(floader.get());
 
@@ -1286,9 +1298,10 @@ void unit_test_packing_texture_name_collision_resample_bug()
         const auto& bmp = img.AsBitmap<gfx::RGB>();
         TEST_REQUIRE(bmp == bitmap[1]);
     }
+    gfx::SetResourceLoader(nullptr);
 }
 
-void unit_test_export_import()
+void unit_test_json_export_import()
 {
     DeleteDir("TestWorkspace");
     MakeDir("TestWorkspace"); // initially empty workspace folder.
@@ -1302,16 +1315,558 @@ void unit_test_export_import()
         resource.SetProperty("int", 123);
         resource.SetProperty("str", QString("hello"));
         workspace.SaveResource(resource);
-        workspace.ExportResources(std::vector<size_t>{0}, "test_export_import_content.json");
+        workspace.ExportResourceJson(std::vector<size_t>{0}, "test_export_import_content.json");
     }
 
     {
         std::vector<std::unique_ptr<app::Resource>> resources;
-        TEST_REQUIRE(app::Workspace::ImportResources("test_export_import_content.json",resources));
+        TEST_REQUIRE(app::Workspace::ImportResourcesFromJson("test_export_import_content.json", resources));
         TEST_REQUIRE(resources.size() == 1);
         TEST_REQUIRE(resources[0]->GetId() == "foo123");
         TEST_REQUIRE(resources[0]->GetProperty("int", 0) == 123);
         TEST_REQUIRE(resources[0]->GetProperty("str", QString()) == "hello");
+    }
+}
+
+app::ResourceListItem* FindResourceItem(const QString& name, app::ResourceList& list)
+{
+    for (auto& item : list)
+    {
+        if (item.name == name)
+            return &item;
+    }
+    return nullptr;
+}
+
+void unit_test_list_deps()
+{
+    // material depends on nothing
+    // polygon depends on material (for display only)
+    // particle engine depends on material (for display only)
+    // entity depends on script, drawable (polygon/particle), material
+    // scene depends on script, entity
+    // tilemap depends on material, data
+    // audio depends on nothing
+    // script depends on nothing
+
+    app::Workspace workspace("TestWorkspace");
+
+    {
+        gfx::ColorClass material;
+        app::MaterialResource material_resource(material, "mat1");
+        workspace.SaveResource(material_resource);
+    }
+
+    // this is a red-herring and not actually used!
+    {
+        gfx::ColorClass material;
+        app::MaterialResource material_resource(material, "mat2");
+        workspace.SaveResource(material_resource);
+    }
+
+    {
+        gfx::PolygonClass poly;
+        app::CustomShapeResource shape_resource(poly, "poly");
+        workspace.SaveResource(shape_resource);
+    }
+
+    {
+        gfx::KinematicsParticleEngineClass particles;
+        app::ParticleSystemResource  particle_resource(particles, "particles");
+        workspace.SaveResource(particle_resource);
+    }
+
+    {
+        app::Script script;
+        app::ScriptResource script_resource(script, "EntityScript");
+        workspace.SaveResource(script_resource);
+
+        game::EntityClass entity;
+        entity.SetName("entity");
+        entity.SetSriptFileId(script_resource.GetIdUtf8());
+
+        {
+            const auto* material = workspace.FindResourceByName("mat1", app::Resource::Type::Material);
+            const auto* drawable = workspace.FindResourceByName("poly", app::Resource::Type::Shape);
+
+            game::DrawableItemClass draw;
+            draw.SetMaterialId(material->GetIdUtf8());
+            draw.SetDrawableId(drawable->GetIdUtf8());
+            game::EntityNodeClass node;
+            node.SetName("node1");
+            node.SetDrawable(draw);
+            entity.AddNode(node);
+        }
+        {
+            const auto* material = workspace.FindResourceByName("Red", app::Resource::Type::Material);
+            const auto* drawable = workspace.FindResourceByName("particles", app::Resource::Type::ParticleSystem);
+            game::DrawableItemClass draw;
+            draw.SetMaterialId(material->GetIdUtf8());
+            draw.SetDrawableId(drawable->GetIdUtf8());
+            game::EntityNodeClass node;
+            node.SetName("node2");
+            node.SetDrawable(draw);
+            entity.AddNode(node);
+        }
+
+        app::EntityResource resource(entity, "entity");
+        workspace.SaveResource(resource);
+    }
+
+    {
+        game::TilemapClass map;
+        map.SetName("map");
+
+        const auto* material = workspace.FindResourceByName("mat1", app::Resource::Type::Material);
+
+        game::TilemapLayerClass layer;
+        layer.SetName("layer");
+        layer.SetType(game::TilemapLayerClass::Type::Render);
+        layer.SetPaletteMaterialId(material->GetIdUtf8(), 0);
+        map.AddLayer(layer);
+
+        app::TilemapResource resource(map, "map");
+        workspace.SaveResource(resource);
+    }
+
+    {
+        const auto* map = workspace.FindResourceByName("map", app::Resource::Type::Tilemap);
+
+        app::Script script;
+        app::ScriptResource script_resource(script, "SceneScript");
+        workspace.SaveResource(script_resource);
+
+        game::SceneClass scene;
+        scene.SetName("scene");
+        scene.SetScriptFileId(script_resource.GetIdUtf8());
+        scene.SetTilemapId(map->GetIdUtf8());
+
+        const auto* entity = workspace.FindResourceByName("entity", app::Resource::Type::Entity);
+
+        {
+            game::SceneNodeClass node;
+            node.SetName("node");
+            node.SetEntityId(entity->GetIdUtf8());
+            scene.AddNode(node);
+        }
+        app::SceneResource  resource(scene, "scene");
+        workspace.SaveResource(resource);
+    }
+
+    {
+        TEST_REQUIRE(workspace.GetUserDefinedResource(0).GetName() == "mat1");
+        TEST_REQUIRE(workspace.GetUserDefinedResource(1).GetName() == "mat2");
+        TEST_REQUIRE(workspace.GetUserDefinedResource(2).GetName() == "poly");
+        TEST_REQUIRE(workspace.GetUserDefinedResource(3).GetName() == "particles");
+        TEST_REQUIRE(workspace.GetUserDefinedResource(4).GetName() == "EntityScript");
+        TEST_REQUIRE(workspace.GetUserDefinedResource(5).GetName() == "entity");
+        TEST_REQUIRE(workspace.GetUserDefinedResource(6).GetName() == "map");
+        TEST_REQUIRE(workspace.GetUserDefinedResource(7).GetName() == "SceneScript");
+        TEST_REQUIRE(workspace.GetUserDefinedResource(8).GetName() == "scene");
+
+        // material
+        {
+            auto list = workspace.ListDependencies(0);
+            TEST_REQUIRE(list.empty());
+        }
+        // entity
+        {
+            auto list = workspace.ListDependencies(5);
+            TEST_REQUIRE(list.size() == 4);
+            TEST_REQUIRE(FindResourceItem("mat1", list));
+            TEST_REQUIRE(FindResourceItem("particles", list));
+            TEST_REQUIRE(FindResourceItem("poly", list));
+            TEST_REQUIRE(FindResourceItem("EntityScript", list));
+            // red herring
+            TEST_REQUIRE(FindResourceItem("mat2", list) == nullptr);
+        }
+        // tilemap
+        {
+            auto list = workspace.ListDependencies(6);
+            TEST_REQUIRE(list.size() == 1);
+            TEST_REQUIRE(FindResourceItem("mat1", list));
+        }
+        // scene
+        {
+            auto list = workspace.ListDependencies(8);
+            TEST_REQUIRE(list.size() == 7);
+            TEST_REQUIRE(FindResourceItem("mat1", list));
+            TEST_REQUIRE(FindResourceItem("particles", list));
+            TEST_REQUIRE(FindResourceItem("poly", list));
+            TEST_REQUIRE(FindResourceItem("EntityScript", list));
+            TEST_REQUIRE(FindResourceItem("SceneScript", list));
+            TEST_REQUIRE(FindResourceItem("entity", list));
+            TEST_REQUIRE(FindResourceItem("map", list));
+        }
+
+        // scene + entity
+        {
+            auto list = workspace.ListDependencies(std::vector<size_t>{5, 8});
+            TEST_REQUIRE(list.size() == 7);
+            TEST_REQUIRE(FindResourceItem("mat1", list));
+            TEST_REQUIRE(FindResourceItem("particles", list));
+            TEST_REQUIRE(FindResourceItem("poly", list));
+            TEST_REQUIRE(FindResourceItem("EntityScript", list));
+            TEST_REQUIRE(FindResourceItem("SceneScript", list));
+            TEST_REQUIRE(FindResourceItem("entity", list));
+            TEST_REQUIRE(FindResourceItem("map", list));
+        }
+
+        // tilemap + entity
+        {
+            auto list = workspace.ListDependencies(std::vector<size_t>{5, 6});
+            TEST_REQUIRE(list.size() == 4);
+            TEST_REQUIRE(FindResourceItem("mat1", list));
+            TEST_REQUIRE(FindResourceItem("particles", list));
+            TEST_REQUIRE(FindResourceItem("poly", list));
+            TEST_REQUIRE(FindResourceItem("EntityScript", list));
+        }
+    }
+}
+
+void unit_test_export_import_basic()
+{
+    {
+        DeleteDir("TestWorkspace");
+
+        QDir d;
+        // setup dummy shaders and data.
+        TEST_REQUIRE(d.mkpath("TestWorkspace"));
+        TEST_REQUIRE(d.mkpath("TestWorkspace/shaders/es2"));
+        TEST_REQUIRE(d.mkpath("TestWorkspace/lua"));
+        TEST_REQUIRE(d.mkpath("TestWorkspace/audio"));
+        TEST_REQUIRE(d.mkpath("TestWorkspace/data"));
+        TEST_REQUIRE(d.mkpath("TestWorkspace/fonts"));
+        TEST_REQUIRE(d.mkpath("TestWorkspace/ui"));
+        TEST_REQUIRE(d.mkpath("TestWorkspace/textures"));
+        TEST_REQUIRE(d.mkpath("TestWorkspace/textures/foobar"));
+        TEST_REQUIRE(app::WriteTextFile("TestWorkspace/shaders/es2/my_material.glsl", "my_material.glsl"));
+        TEST_REQUIRE(app::WriteTextFile("TestWorkspace/lua/game_script.lua", "game_script.lua"));
+        TEST_REQUIRE(app::WriteTextFile("TestWorkspace/audio/music.mp3", "music.mp3"));
+        TEST_REQUIRE(app::WriteTextFile("TestWorkspace/data/levels.txt", "levels.txt"));
+        TEST_REQUIRE(app::WriteTextFile("TestWorkspace/fonts/font.otf", "font.otf"));
+        // setup dummy UI style file
+        QString style(
+                R"(
+{
+  "properties": [
+     {
+       "key": "widget/border-width",
+       "value": 1.0
+     },
+     {
+       "key": "widget/text-font",
+       "value": "ws://fonts/font.otf"
+     }
+   ],
+
+  "materials": [
+     {
+       "key": "widget/background",
+       "type": "Null"
+     }
+  ]
+}
+)");
+        TEST_REQUIRE(app::WriteTextFile("TestWorkspace/ui/style.json", style));
+
+        app::Workspace workspace("TestWorkspace");
+
+        gfx::RgbBitmap bitmap;
+        bitmap.Resize(128, 100);
+        bitmap.Fill(gfx::Color::Yellow);
+        gfx::WritePNG(bitmap, "TestWorkspace/textures/foobar/test_bitmap.png");
+
+        // setup some content.
+        gfx::detail::TextureFileSource texture_source;
+        texture_source.SetFileName(workspace.MapFileToWorkspace(std::string("TestWorkspace/textures/foobar/test_bitmap.png")));
+        texture_source.SetName("test-texture");
+
+        gfx::TextureMap2D texture;
+        texture.SetSamplerName("kTexture");
+        texture.SetRectUniformName("kTextureRect");
+        texture.SetTextureRect(gfx::FRect(0.0f, 0.0f, 1.0f, 1.0f));
+        texture.SetTexture(texture_source.Copy());
+
+        gfx::CustomMaterialClass material;
+        material.SetTextureMap("texture", std::move(texture));
+        material.SetShaderUri(workspace.MapFileToWorkspace(std::string("TestWorkspace/shaders/es2/my_material.glsl")));
+        app::MaterialResource material_resource(material, "material");
+
+        gfx::PolygonClass poly;
+        app::CustomShapeResource shape_resource(poly, "poly");
+        gfx::KinematicsParticleEngineClass particles;
+        app::ParticleSystemResource particle_resource(particles, "particles");
+
+        app::Script script;
+        script.SetFileURI(workspace.MapFileToWorkspace(std::string("TestWorkspace/lua/game_script.lua")));
+        app::ScriptResource script_resource(script, "GameScript");
+
+        audio::GraphClass audio_graph("music_graph");
+        audio::GraphClass::Element music_src;
+        music_src.id = base::RandomString(10);
+        music_src.name = "music";
+        music_src.type = "FileSource";
+        music_src.args["file"] = workspace.MapFileToWorkspace(std::string("TestWorkspace/audio/music.mp3"));
+        audio_graph.AddElement(std::move(music_src));
+        app::AudioResource audio_resource(audio_graph, "music.mp3");
+
+        app::DataFile data;
+        data.SetFileURI(workspace.MapFileToWorkspace(std::string("TestWorkspace/data/levels.txt")));
+        app::DataResource data_resource(data, "levels.txt");
+
+        uik::Window window;
+        window.SetStyleName(workspace.MapFileToWorkspace(std::string("TestWorkspace/ui/style.json")));
+        app::UIResource ui_resource(window, "UI");
+
+        workspace.SaveResource(material_resource);
+        workspace.SaveResource(shape_resource);
+        workspace.SaveResource(particle_resource);
+        workspace.SaveResource(script_resource);
+        workspace.SaveResource(audio_resource);
+        workspace.SaveResource(data_resource);
+        workspace.SaveResource(ui_resource);
+
+        app::Workspace::ExportOptions options;
+        options.zip_file = "test-export.zip";
+
+        // select the resources.
+        std::vector<const app::Resource*> resources;
+        resources.push_back(&workspace.GetUserDefinedResource(0));
+        resources.push_back(&workspace.GetUserDefinedResource(1));
+        resources.push_back(&workspace.GetUserDefinedResource(2));
+        resources.push_back(&workspace.GetUserDefinedResource(3));
+        resources.push_back(&workspace.GetUserDefinedResource(4));
+        resources.push_back(&workspace.GetUserDefinedResource(5));
+        resources.push_back(&workspace.GetUserDefinedResource(6));
+        TEST_REQUIRE(workspace.ExportResourceArchive(resources, options));
+    }
+
+    {
+        DeleteDir("TestWorkspace");
+        MakeDir("TestWorkspace");
+
+        app::Workspace workspace("TestWorkspace");
+
+        app::ResourceArchive zip;
+        zip.SetImportSubFolderName("test-export");
+        TEST_REQUIRE(zip.Open("test-export.zip"));
+        TEST_REQUIRE(workspace.ImportResourceArchive(zip));
+        TEST_REQUIRE(workspace.GetNumUserDefinedResources() == 7);
+        TEST_REQUIRE(app::ReadTextFile("TestWorkspace/test-export/shaders/es2/my_material.glsl") == "my_material.glsl");
+        TEST_REQUIRE(app::ReadTextFile("TestWorkspace/test-export/lua/game_script.lua") == "game_script.lua");
+        TEST_REQUIRE(app::ReadTextFile("TestWorkspace/test-export/audio/music.mp3") == "music.mp3");
+        TEST_REQUIRE(app::ReadTextFile("TestWorkspace/test-export/data/levels.txt") == "levels.txt");
+        TEST_REQUIRE(app::ReadTextFile("TestWorkspace/test-export/fonts/font.otf") == "font.otf");
+        const auto& style_string = app::ReadTextFile("TestWorkspace/test-export/ui/style.json");
+        TEST_REQUIRE(!style_string.isEmpty());
+
+        gfx::Image texture;
+        TEST_REQUIRE(texture.Load("TestWorkspace/test-export/textures/test_bitmap.png"));
+        const auto& bmp = texture.AsBitmap<gfx::RGB>();
+        TEST_REQUIRE(bmp.GetWidth() == 128);
+        TEST_REQUIRE(bmp.GetHeight() == 100);
+        TEST_REQUIRE(CountPixels(bmp, gfx::Color::Yellow) == 128 * 100);
+    }
+}
+
+void unit_test_export_name_dupe()
+{
+    gfx::RgbBitmap bitmap[2];
+    bitmap[0].Resize(64, 64);
+    bitmap[0].Fill(gfx::Color::Green);
+    bitmap[1].Resize(32, 32);
+    bitmap[1].Fill(gfx::Color::HotPink);
+
+    {
+        DeleteDir("TestWorkspace");
+        MakeDir("TestWorkspace");
+        MakeDir("TestWorkspace/textures/foo");
+        MakeDir("TestWorkspace/textures/bar");
+
+        gfx::WritePNG(bitmap[0], "TestWorkspace/textures/foo/bitmap.png");
+        gfx::WritePNG(bitmap[1], "TestWorkspace/textures/bar/bitmap.png");
+
+        app::Workspace workspace("TestWorkspace");
+        gfx::TextureMap2DClass materials[2];
+        materials[0].SetTexture(gfx::LoadTextureFromFile("ws://textures/foo/bitmap.png"));
+        materials[1].SetTexture(gfx::LoadTextureFromFile("ws://textures/bar/bitmap.png"));
+        workspace.SaveResource(app::MaterialResource(materials[0], "material0"));
+        workspace.SaveResource(app::MaterialResource(materials[1], "material1"));
+
+        app::Workspace::ExportOptions options;
+        options.zip_file = "test-export2.zip";
+        // select the resources.
+        std::vector<const app::Resource*> resources;
+        resources.push_back(&workspace.GetUserDefinedResource(0));
+        resources.push_back(&workspace.GetUserDefinedResource(1));
+        TEST_REQUIRE(workspace.ExportResourceArchive(resources, options));
+    }
+
+    {
+        DeleteDir("TestWorkspace");
+        MakeDir("TestWorkspace");
+
+        app::Workspace workspace("TestWorkspace");
+
+        app::ResourceArchive zip;
+        zip.SetImportSubFolderName("test-export");
+        TEST_REQUIRE(zip.Open("test-export2.zip"));
+        TEST_REQUIRE(workspace.ImportResourceArchive(zip));
+        TEST_REQUIRE(workspace.GetNumUserDefinedResources() == 2);
+
+        {
+            const auto* resource0 = workspace.FindResourceByName("material0", app::Resource::Type::Material);
+            const auto* resource1 = workspace.FindResourceByName("material1", app::Resource::Type::Material);
+            TEST_REQUIRE(resource0);
+            TEST_REQUIRE(resource1);
+            const gfx::MaterialClass* material0;
+            const gfx::MaterialClass* material1;
+            resource0->GetContent(&material0);
+            resource1->GetContent(&material1);
+            const auto* texture_map0 = material0->AsTexture();
+            const auto* texture_map1 = material1->AsTexture();
+            const auto* texture_map_source0 = texture_map0->GetTextureSource();
+            const auto* texture_map_source1 = texture_map1->GetTextureSource();
+            const auto* texture_map_file_source0 = dynamic_cast<const gfx::detail::TextureFileSource*>(texture_map_source0);
+            const auto* texture_map_file_source1 = dynamic_cast<const gfx::detail::TextureFileSource*>(texture_map_source1);
+            TEST_REQUIRE(texture_map_file_source0->GetFilename() != texture_map_file_source1->GetFilename());
+            const auto& texture_file0 = workspace.MapFileToFilesystem(texture_map_file_source0->GetFilename());
+            const auto& texture_file1 = workspace.MapFileToFilesystem(texture_map_file_source1->GetFilename());
+            gfx::Image img0;
+            gfx::Image img1;
+            TEST_REQUIRE(img0.Load(app::ToUtf8(texture_file0)));
+            TEST_REQUIRE(img1.Load(app::ToUtf8(texture_file1)));
+            const auto& bmp0 = img0.AsBitmap<gfx::RGB>();
+            const auto& bmp1 = img1.AsBitmap<gfx::RGB>();
+            TEST_REQUIRE(bmp0 == bitmap[0]);
+            TEST_REQUIRE(bmp1 == bitmap[1]);
+        }
+    }
+}
+
+void unit_test_duplicate_with_data()
+{
+    // check duplication of tilemap layer data.
+    {
+        DeleteDir("TestWorkspace");
+
+        QDir d;
+        TEST_REQUIRE(d.mkpath("TestWorkspace"));
+        TEST_REQUIRE(d.mkpath("TestWorkspace/data"));
+
+        app::Workspace workspace("TestWorkspace");
+
+        game::TilemapLayerClass layer;
+        layer.SetName("layer");
+        layer.SetType(game::TilemapLayerClass::Type::DataUInt8);
+
+        const auto& data_uri  = app::toString("ws://data/%1.bin", layer.GetId());
+        const auto& data_file = workspace.MapFileToFilesystem(data_uri);
+        TEST_REQUIRE(app::WriteTextFile(data_file, "dummy layer data"));
+
+        app::DataFile datafile;
+        datafile.SetFileURI(data_uri);
+        datafile.SetTypeTag(app::DataFile::TypeTag::TilemapData);
+        datafile.SetOwnerId(layer.GetId());
+
+        layer.SetDataUri(app::ToUtf8(data_uri));
+        layer.SetDataId(datafile.GetId());
+
+        game::TilemapClass map;
+        map.SetName("map");
+        map.SetMapWidth(10);
+        map.SetMapHeight(10);
+        map.AddLayer(layer);
+
+        app::DataResource data_resource(datafile, "layer data");
+        workspace.SaveResource(data_resource);
+
+        app::TilemapResource map_resource(map, "tilemap");
+        workspace.SaveResource(map_resource);
+
+        TEST_REQUIRE(workspace.GetNumUserDefinedResources() == 2);
+        TEST_REQUIRE(workspace.GetUserDefinedResource(0).GetName() == "layer data");
+        TEST_REQUIRE(workspace.GetUserDefinedResource(1).GetName() == "tilemap");
+
+        workspace.DuplicateResource(1);
+        TEST_REQUIRE(workspace.GetNumUserDefinedResources() == 4);
+
+        {
+            const auto& cpy_data_res = workspace.GetResourceByName("Copy of tilemap Layer Data", app::Resource::Type::DataFile);
+            const auto& cpy_map_res  = workspace.GetResourceByName("Copy of tilemap", app::Resource::Type::Tilemap);
+
+            const game::TilemapClass* cpy_map = nullptr;
+            cpy_map_res.GetContent(&cpy_map);
+            TEST_REQUIRE(cpy_map->GetNumLayers() == 1);
+            const auto& cpy_layer = cpy_map->GetLayer(0);
+
+            const app::DataFile* data = nullptr;
+            cpy_data_res.GetContent(&data);
+            TEST_REQUIRE(data->GetTypeTag() == app::DataFile::TypeTag::TilemapData);
+            TEST_REQUIRE(data->GetFileURI() == base::FormatString("ws://data/%1.bin", cpy_layer.GetId()));
+            TEST_REQUIRE(data->GetOwnerId() == cpy_layer.GetId());
+            TEST_REQUIRE(data->GetFileURI() == cpy_layer.GetDataUri());
+            TEST_REQUIRE(data->GetId()      == cpy_layer.GetDataId());
+            const auto& cpy_file = workspace.MapFileToFilesystem(data->GetFileURI());
+            TEST_REQUIRE(app::ReadTextFile(cpy_file) == "dummy layer data");
+        }
+    }
+}
+
+void unit_test_delete_with_data()
+{
+    // check deletion of tilemap layer data.
+    {
+        DeleteDir("TestWorkspace");
+
+        QDir d;
+        TEST_REQUIRE(d.mkpath("TestWorkspace"));
+        TEST_REQUIRE(d.mkpath("TestWorkspace/data"));
+
+        app::Workspace workspace("TestWorkspace");
+
+        game::TilemapLayerClass layer;
+        layer.SetName("layer");
+        layer.SetType(game::TilemapLayerClass::Type::DataUInt8);
+
+        const auto& data_uri = app::toString("ws://data/%1.bin", layer.GetId());
+        const auto& data_file = workspace.MapFileToFilesystem(data_uri);
+        TEST_REQUIRE(app::WriteTextFile(data_file, "dummy layer data"));
+        TEST_REQUIRE(QFileInfo(data_file).exists() == true);
+
+        app::DataFile datafile;
+        datafile.SetFileURI(data_uri);
+        datafile.SetTypeTag(app::DataFile::TypeTag::TilemapData);
+        datafile.SetOwnerId(layer.GetId());
+
+        layer.SetDataUri(app::ToUtf8(data_uri));
+        layer.SetDataId(datafile.GetId());
+
+        game::TilemapClass map;
+        map.SetName("map");
+        map.SetMapWidth(10);
+        map.SetMapHeight(10);
+        map.AddLayer(layer);
+
+        app::DataResource data_resource(datafile, "layer data");
+        workspace.SaveResource(data_resource);
+
+        app::TilemapResource map_resource(map, "tilemap");
+        workspace.SaveResource(map_resource);
+
+        TEST_REQUIRE(workspace.GetNumUserDefinedResources() == 2);
+        TEST_REQUIRE(workspace.GetUserDefinedResource(0).GetName() == "layer data");
+        TEST_REQUIRE(workspace.GetUserDefinedResource(1).GetName() == "tilemap");
+
+        workspace.DeleteResource(1);
+        TEST_REQUIRE(workspace.GetNumUserDefinedResources() == 0);
+        TEST_REQUIRE(QFileInfo(data_file).exists() == false);
+    }
+
+    // todo: script deletion
+    {
+
     }
 }
 
@@ -1339,6 +1894,12 @@ int test_main(int argc, char* argv[])
     unit_test_packing_texture_name_collision();
     unit_test_packing_ui_style_resources();
     unit_test_packing_texture_name_collision_resample_bug();
-    unit_test_export_import();
+    unit_test_json_export_import();
+    unit_test_list_deps();
+    unit_test_export_import_basic();
+    unit_test_export_name_dupe();
+
+    unit_test_duplicate_with_data();
+    unit_test_delete_with_data();
     return 0;
 }

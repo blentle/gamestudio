@@ -27,6 +27,7 @@
 
 #include <memory>
 #include <string>
+#include <unordered_map>
 
 #include "editor/gui/mainwidget.h"
 #include "editor/gui/treemodel.h"
@@ -57,6 +58,7 @@ namespace gui
 
         virtual QString GetId() const override;
         virtual void Initialize(const UISettings& settings) override;
+        virtual void SetViewerMode() override;
         virtual void AddActions(QToolBar& bar) override;
         virtual void AddActions(QMenu& menu) override;
         virtual bool SaveState(Settings& settings) const override;
@@ -102,7 +104,10 @@ namespace gui
         void on_actionNodeMoveUpLayer_triggered();
         void on_actionNodeMoveDownLayer_triggered();
         void on_actionNodeDuplicate_triggered();
+        void on_actionNodeComment_triggered();
+        void on_actionNodeRename_triggered();
         void on_entityName_textChanged(const QString& text);
+        void on_entityTag_textChanged(const QString& text);
         void on_entityLifetime_valueChanged(double value);
         void on_chkKillAtLifetime_stateChanged(int);
         void on_chkKillAtBoundary_stateChanged(int);
@@ -136,6 +141,7 @@ namespace gui
         void on_idleTrack_currentIndexChanged(int);
         void on_scriptFile_currentIndexChanged(int);
         void on_nodeName_textChanged(const QString& text);
+        void on_nodeComment_textChanged(const QString& text);
         void on_nodeSizeX_valueChanged(double value);
         void on_nodeSizeY_valueChanged(double value);
         void on_nodeTranslateX_valueChanged(double value);
@@ -238,6 +244,7 @@ namespace gui
         void UpdateDeletedResourceReferences();
         game::EntityNodeClass* GetCurrentNode();
         const game::EntityNodeClass* GetCurrentNode() const;
+        size_t ComputeHash() const;
     private:
         Ui::EntityWidget mUI;
         // there doesn't seem to be a way to do this in the designer
@@ -282,5 +289,7 @@ namespace gui
         // Undo "stack" with fixed capacity that begins
         // overwrite old items when space is exceeded
         boost::circular_buffer<game::EntityClass> mUndoStack;
+        // map entity nodes to associated comments (if any)
+        std::unordered_map<std::string, QString> mComments;
     };
 }

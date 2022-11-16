@@ -19,7 +19,8 @@
 #include "config.h"
 
 #include "warnpush.h"
-#  include <boost/algorithm/string/erase.hpp>
+#  include <quazip/quazip.h>
+#  include <quazip/quazipfile.h>
 #  include <nlohmann/json.hpp>
 #  include <neargye/magic_enum.hpp>
 #  include <private/qfsfileengine_p.h> // private in Qt5
@@ -43,6 +44,7 @@
 #include <memory>
 #include <unordered_map>
 #include <set>
+#include <stack>
 #include <functional>
 
 #include "editor/app/eventlog.h"
@@ -95,16 +97,591 @@ QString FixWorkspacePath(QString path)
 #endif
     return path;
 }
+QString MapWorkspaceUri(const QString& uri, const QString& workspace)
+{
+    // see comments in AddFileToWorkspace.
+    // this is basically the same as MapFilePath except this API
+    // is internal to only this application whereas MapFilePath is part of the
+    // API exposed to the graphics/ subsystem.
+    QString ret = uri;
+    if (ret.startsWith("ws://"))
+        ret = app::CleanPath(ret.replace("ws://", workspace));
+    else if (uri.startsWith("app://"))
+        ret = app::CleanPath(ret.replace("app://", GetAppDir()));
+    else if (uri.startsWith("fs://"))
+        ret.remove(0, 5);
+    // return as is
+    return ret;
+}
 
-class ResourcePacker : public gfx::Packer
+template<typename ClassType>
+bool LoadResources(const char* type,
+                   const data::Reader& data,
+                   std::vector<std::unique_ptr<app::Resource>>& vector)
+{
+    DEBUG("Loading %1", type);
+    bool success = true;
+    for (unsigned i=0; i<data.GetNumChunks(type); ++i)
+    {
+        const auto& chunk = data.GetReadChunk(type, i);
+        std::string name;
+        std::string id;
+        if (!chunk->Read("resource_name", &name) ||
+            !chunk->Read("resource_id", &id))
+        {
+            ERROR("Unexpected JSON. Maybe old workspace version?");
+            success = false;
+            continue;
+        }
+        std::optional<ClassType> ret = ClassType::FromJson(*chunk);
+        if (!ret.has_value())
+        {
+            ERROR("Failed to load resource. [name='%1']", name);
+            success = false;
+            continue;
+        }
+        vector.push_back(std::make_unique<app::GameResource<ClassType>>(std::move(ret.value()), app::FromUtf8(name)));
+        DEBUG("Loaded resource. [name='%1']", name);
+    }
+    return success;
+}
+
+template<typename ClassType>
+bool LoadMaterials(const char* type,
+                   const data::Reader& data,
+                   std::vector<std::unique_ptr<app::Resource>>& vector)
+{
+    DEBUG("Loading %1", type);
+    bool success = true;
+    for (unsigned i=0; i<data.GetNumChunks(type); ++i)
+    {
+        const auto& chunk = data.GetReadChunk(type, i);
+        std::string name;
+        std::string id;
+        if (!chunk->Read("resource_name", &name) ||
+            !chunk->Read("resource_id", &id))
+        {
+            ERROR("Unexpected JSON. Maybe old workspace version?");
+            success = false;
+            continue;
+        }
+        auto ret = ClassType::FromJson(*chunk);
+        if (!ret)
+        {
+            ERROR("Failed to load material. [name='%1']", name);
+            success = false;
+            continue;
+        }
+        vector.push_back(std::make_unique<app::MaterialResource>(std::move(ret), app::FromUtf8(name)));
+        DEBUG("Loaded material. [name='%1']", name);
+    }
+    return success;
+}
+
+
+class ZipArchiveImporter : public app::ResourcePacker
 {
 public:
-    using ObjectHandle = gfx::Packer::ObjectHandle;
+    ZipArchiveImporter(const QString& zip_file, const QString& zip_dir, const QString& workspace_dir, QuaZip& zip)
+       : mZipFile(zip_file)
+       , mZipDir(zip_dir)
+       , mWorkspaceDir(workspace_dir)
+       , mZip(zip)
+    {}
+    virtual void CopyFile(const std::string& uri, const std::string& dir) override
+    {
+        if (base::StartsWith(uri, "app://"))
+            return;
 
-    ResourcePacker(const QString& outdir,
-                   unsigned max_width, unsigned max_height,
-                   unsigned pack_width, unsigned pack_height, unsigned padding,
-                   bool resize_large, bool pack_small)
+        // copy file from the zip into the workspace directory.
+        const auto& src_file = MapUriToZipFile(uri);
+        if (!FindZipFile(src_file))
+            return;
+
+        QuaZipFileInfo info;
+        QByteArray bytes;
+
+        QuaZipFile zip_file(&mZip);
+        zip_file.open(QIODevice::ReadOnly);
+        zip_file.getFileInfo(&info);
+        bytes = zip_file.readAll();
+
+        // the dir part of the filepath should already have been baked in the zip
+        // when exporting and the filename already contains the directory/path
+        const auto& dst_dir  = app::JoinPath({mWorkspaceDir, mZipDir, app::FromUtf8(dir)});
+        const auto& dst_file = app::JoinPath({mWorkspaceDir, mZipDir, info.name});
+
+        if (!app::MakePath(dst_dir))
+        {
+            ERROR("Failed to create directory. [dir='%1']", dst_dir);
+            return;
+        }
+        QFile file;
+        file.setFileName(dst_file);
+        if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate))
+        {
+            ERROR("Failed to open file for writing. [file='%1', error='%2']]", dst_file, file.errorString());
+            return;
+        }
+        file.write(bytes);
+        file.close();
+        auto mapping = base::FormatString("ws://%1/%2", app::ToUtf8(mZipDir), app::ToUtf8(info.name));
+        DEBUG("New zip URI mapping. [uri='%1', mapping='%2']", uri, mapping);
+        mUriMapping[uri] = std::move(mapping);
+    }
+    virtual void WriteFile(const std::string& uri, const std::string& dir, const void* data, size_t len) override
+    {
+        // write the file contents into the workspace directory.
+
+        const auto& src_file = MapUriToZipFile(uri);
+        if (!FindZipFile(src_file))
+            return;
+
+        QuaZipFileInfo info;
+        mZip.getCurrentFileInfo(&info);
+
+        // the dir part of the filepath should already have been baked in the zip
+        // when exporting and the filename already contains the directory/path
+        const auto& dst_dir  = app::JoinPath({mWorkspaceDir, mZipDir, app::FromUtf8(dir)});
+        const auto& dst_file = app::JoinPath({mWorkspaceDir, mZipDir, info.name});
+
+        if (!app::MakePath(dst_dir))
+        {
+            ERROR("Failed to create directory. [dir='%1']", dst_dir);
+            return;
+        }
+
+        QFile file;
+        file.setFileName(dst_file);
+        if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate))
+        {
+            ERROR("Failed to open file for writing. [file='%1', error='%2']", dst_file, file.errorString());
+            return;
+        }
+        file.write((const char*)data, len);
+        file.close();
+        auto mapping = base::FormatString("ws://%1/%2", app::ToUtf8(mZipDir), app::ToUtf8(info.name));
+        DEBUG("New zip URI mapping. [uri='%1', mapping='%2']", uri, mapping);
+        mUriMapping[uri] = std::move(mapping);
+    }
+
+    virtual bool ReadFile(const std::string& uri, QByteArray* array) const override
+    {
+        const auto& src_file = MapUriToZipFile(uri);
+        if (!FindZipFile(src_file))
+            return false;
+        QuaZipFile zip_file(&mZip);
+        zip_file.open(QIODevice::ReadOnly);
+        *array = zip_file.readAll();
+        zip_file.close();
+        return true;
+    }
+    virtual std::string MapUri(const std::string& uri) const override
+    {
+        if (base::StartsWith(uri, "app://"))
+            return uri;
+
+        const auto* mapping = base::SafeFind(mUriMapping, uri);
+        ASSERT(mapping);
+        return *mapping;
+    }
+
+private:
+    QString MapUriToZipFile(const std::string& uri) const
+    {
+        ASSERT(base::StartsWith(uri, "zip://"));
+        const auto& rest = uri.substr(6);
+        return app::FromUtf8(rest);
+    }
+
+    bool FindZipFile(const QString& unix_style_name) const
+    {
+        if (!mZip.goToFirstFile())
+            return false;
+        // on windows the zip file paths are also windows style. (of course)
+        QString windows_style_name = unix_style_name;
+        windows_style_name.replace("/", "\\");
+        do
+        {
+            QuaZipFileInfo info;
+            if (!mZip.getCurrentFileInfo(&info))
+                return false;
+            if ((info.name == unix_style_name) ||
+                (info.name == windows_style_name))
+                return true;
+        }
+        while (mZip.goToNextFile());
+        ERROR("Failed to find file in zip. [file='%1']", unix_style_name);
+        return false;
+    }
+private:
+    const QString mZipFile;
+    const QString mZipDir;
+    const QString mWorkspaceDir;
+    QuaZip& mZip;
+    std::unordered_map<std::string, std::string> mUriMapping;
+};
+
+
+class ZipArchiveExporter : public app::ResourcePacker
+{
+public:
+    ZipArchiveExporter(const QString& filename, const QString& workspace_dir)
+      : mZipFile(filename)
+      , mWorkspaceDir(workspace_dir)
+    {
+        mZip.setAutoClose(true);
+        mZip.setFileNameCodec("UTF-8");
+        mZip.setUtf8Enabled(true);
+        mZip.setZip64Enabled(true);
+    }
+    virtual void CopyFile(const std::string& uri, const std::string& dir) override
+    {
+        // don't package resources that are part of the editor.
+        // todo: this would need some kind of versioning in order to
+        // make sure that the resources under app:// then match between
+        // the exporter and the importer.
+        if (base::StartsWith(uri, "app://"))
+            return;
+
+        if (const auto* dupe = base::SafeFind(mUriMapping, uri))
+        {
+            DEBUG("Skipping duplicate file copy. [file='%1']", uri);
+            return;
+        }
+
+        const auto& src_file = MapFileToFilesystem(app::FromUtf8(uri));
+        const auto& src_info = QFileInfo(src_file);
+        if (!src_info.exists())
+        {
+            ERROR("Could not find source file. [file='%1']", src_file);
+            return;
+        }
+        std::vector<char> buffer;
+        if (!app::ReadBinaryFile(src_file, buffer))
+        {
+            ERROR("Failed to read file contents. [file='%1']", src_file);
+            return;
+        }
+
+        const auto& src_path = src_info.absoluteFilePath();
+        const auto& src_name = src_info.fileName();
+        const auto& dst_dir  = app::FromUtf8(dir);
+
+        QString dst_name = src_name;
+        QString dst_file = app::JoinPath(dst_dir, dst_name);
+        unsigned rename_attempt = 0;
+        while (base::Contains(mFileNames, dst_name))
+        {
+            dst_name = app::toString("%1_%2", rename_attempt++, src_name);
+            dst_file = app::JoinPath(dst_dir, dst_name);
+        }
+        mFileNames.insert(dst_name);
+
+        QuaZipFile zip_file(&mZip);
+        zip_file.open(QIODevice::WriteOnly, QuaZipNewInfo(dst_file));
+        zip_file.write(buffer.data(), buffer.size());
+        zip_file.close();
+        ASSERT(base::EndsWith(dir, "/"));
+        mUriMapping[uri] = base::FormatString("zip://%1%2", dir, app::ToUtf8(dst_name));
+        DEBUG("Copied new file into zip archive. [file='%1', size=%2]", src_file, app::Bytes { buffer.size() });
+    }
+    virtual void WriteFile(const std::string& uri, const std::string& dir, const void* data, size_t len) override
+    {
+        if (const auto* dupe = base::SafeFind(mUriMapping, uri))
+        {
+            DEBUG("Skipping duplicate file replace. [file='%1']", uri);
+            return;
+        }
+        const auto& src_file = MapFileToFilesystem(app::FromUtf8(uri));
+        const auto& src_info = QFileInfo(src_file);
+        if (!src_info.exists())
+        {
+            ERROR("Could not find source file. [file='%1']", src_file);
+            return;
+        }
+        const auto& src_name = src_info.fileName();
+        const auto& dst_dir  = app::FromUtf8(dir);
+        const auto& dst_name = app::JoinPath(dst_dir, src_name);
+
+        QuaZipFile zip_file(&mZip);
+        zip_file.open(QIODevice::WriteOnly, QuaZipNewInfo(dst_name));
+        zip_file.write((const char*)data, len);
+        zip_file.close();
+        ASSERT(base::EndsWith(dir, "/"));
+        mUriMapping[uri] = base::FormatString("zip://%1%2", dir, app::ToUtf8(src_name));
+        DEBUG("Added new file into zip archive. [file='%1']", dst_name);
+    }
+
+    virtual bool ReadFile(const std::string& uri, QByteArray* bytes) const override
+    {
+        const auto& file = MapFileToFilesystem(app::FromUtf8(uri));
+        return app::detail::LoadArrayBuffer(file, bytes);
+    }
+    virtual std::string MapUri(const std::string& uri) const override
+    {
+        if (base::StartsWith(uri, "app://"))
+            return uri;
+
+        const auto* mapping = base::SafeFind(mUriMapping, uri);
+        ASSERT(mapping);
+        return *mapping;
+    }
+
+    void WriteText(const std::string& text, const char* name)
+    {
+        QuaZipFile zip_file(&mZip);
+        zip_file.open(QIODevice::WriteOnly, QuaZipNewInfo(name));
+        zip_file.write(text.c_str(), text.size());
+        zip_file.close();
+    }
+    void WriteBytes(const QByteArray& bytes, const char* name)
+    {
+        QuaZipFile zip_file(&mZip);
+        zip_file.open(QIODevice::WriteOnly, QuaZipNewInfo(name));
+        zip_file.write(bytes.data(), bytes.size());
+        zip_file.close();
+    }
+
+    void Close()
+    {
+        mZip.close();
+        mFile.flush();
+        mFile.close();
+    }
+    bool Open()
+    {
+        mFile.setFileName(mZipFile);
+        if (!mFile.open(QIODevice::ReadWrite))
+        {
+            ERROR("Failed to open zip file for writing. [file='%1', error='%2']", mZipFile, mFile.errorString());
+            return false;
+        }
+        mZip.setIoDevice(&mFile);
+        if (!mZip.open(QuaZip::mdCreate))
+        {
+            ERROR("QuaZip open failed. [code=%1]", mZip.getZipError());
+            return false;
+        }
+        DEBUG("QuaZip open successful. [file='%1']", mZipFile);
+        return true;
+    }
+private:
+    QString MapFileToFilesystem(const QString& uri) const
+    {
+        return MapWorkspaceUri(uri, mWorkspaceDir);
+    }
+private:
+    const QString mZipFile;
+    const QString mWorkspaceDir;
+    std::unordered_set<QString> mFileNames;
+    std::unordered_map<std::string, std::string> mUriMapping;
+    QFile mFile;
+    QuaZip mZip;
+};
+
+class MyResourcePacker : public app::ResourcePacker
+{
+public:
+    MyResourcePacker(const QString& package_dir, const QString& workspace_dir)
+      : mPackageDir(package_dir)
+      , mWorkspaceDir(workspace_dir)
+    {}
+    virtual void CopyFile(const std::string& uri, const std::string& dir) override
+    {
+        // sort of hack here, probe the uri and skip the copy of a
+        // custom shader .json descriptor. it's not needed in the
+        // deployed package.
+        if (base::Contains(uri, "shaders/es2") && base::EndsWith(uri, ".json"))
+        {
+            DEBUG("Skipping copy of shader .json descriptor. [uri='%1']", uri);
+            return;
+        }
+
+        // if the target dir for packing is textures/ we skip this because
+        // the textures are packed through calls to GfxTexturePacker.
+        if (dir == "textures/")
+        {
+            mUriMapping[uri] = uri;
+            return;
+        }
+
+        if (const auto* dupe = base::SafeFind(mUriMapping, uri))
+        {
+            DEBUG("Skipping duplicate file copy. [file='%1']", uri);
+            return;
+        }
+
+        const auto& src_file = MapFileToFilesystem(app::FromUtf8(uri));
+        const auto& dst_file = CopyFile(src_file, app::FromUtf8(dir));
+        const auto& dst_uri  = MapFileToPackage(dst_file);
+        mUriMapping[uri] = app::ToUtf8(dst_uri);
+    }
+    virtual void WriteFile(const std::string& uri, const std::string& dir, const void* data, size_t len) override
+    {
+        if (const auto* dupe = base::SafeFind(mUriMapping, uri))
+        {
+            DEBUG("Skipping duplicate file replace. [file='%1']", uri);
+            return;
+        }
+        const auto& src_file = MapFileToFilesystem(app::FromUtf8(uri));
+        const auto& dst_file = WriteFile(src_file, app::FromUtf8(dir), data, len);
+        const auto& dst_uri  = MapFileToPackage(dst_file);
+        mUriMapping[uri] = app::ToUtf8(dst_uri);
+    }
+    virtual bool ReadFile(const std::string& uri, QByteArray* bytes) const override
+    {
+        const auto& file = MapFileToFilesystem(app::FromUtf8(uri));
+        return app::detail::LoadArrayBuffer(file, bytes);
+    }
+    virtual std::string MapUri(const std::string& uri) const override
+    {
+        const auto* mapping = base::SafeFind(mUriMapping, uri);
+        ASSERT(mapping);
+        return *mapping;
+    }
+    QString WriteFile(const QString& src_file, const QString& dst_dir, const void* data, size_t len)
+    {
+        if (!app::MakePath(app::JoinPath(mPackageDir, dst_dir)))
+        {
+            ERROR("Failed to create directory. [dir='%1/%2']", mPackageDir, dst_dir);
+            return "";
+        }
+        const auto& dst_file = CreateFileName(src_file, dst_dir, QString(""));
+        if (dst_file.isEmpty())
+            return "";
+
+        QFile file;
+        file.setFileName(dst_file);
+        file.open(QIODevice::WriteOnly | QIODevice::Truncate);
+        if (!file.isOpen())
+        {
+            ERROR("Failed to open file for writing. [file='%1', error='%2']", dst_file, file.errorString());
+            return "";
+        }
+        file.write((const char*)data, len);
+        file.close();
+        return dst_file;
+    }
+
+    QString CopyFile(const QString& src_file, const QString& dst_dir, const QString& filename = QString(""))
+    {
+        if (const auto* dupe = base::SafeFind(mFileMap, src_file))
+        {
+            DEBUG("Skipping duplicate file copy. [file='%1']", src_file);
+            return *dupe;
+        }
+        if (!app::MakePath(app::JoinPath(mPackageDir, dst_dir)))
+        {
+            ERROR("Failed to create directory. [dir='%1/%2']", mPackageDir, dst_dir);
+            mNumErrors++;
+            return "";
+        }
+        const auto& dst_file = CreateFileName(src_file, dst_dir, filename);
+        if (dst_file.isEmpty())
+        {
+            mNumErrors++;
+            return "";
+        }
+
+        CopyFileBuffer(src_file, dst_file);
+        mFileMap[src_file] = dst_file;
+        mFileNames.insert(dst_file);
+        return dst_file;
+    }
+    QString CreateFileName(const QString& src_file, const QString& dst_dir, const QString& filename) const
+    {
+        const auto& src_info = QFileInfo(src_file);
+        if (!src_info.exists())
+        {
+            ERROR("Could not find source file. [file='%1']", src_file);
+            return "";
+        }
+        const auto& src_path = src_info.absoluteFilePath();
+        const auto& src_name = src_info.fileName();
+        const auto& dst_path = app::JoinPath(mPackageDir, dst_dir);
+        QString dst_name = filename.isEmpty() ? src_name : filename;
+        QString dst_file = app::JoinPath(dst_path, dst_name);
+
+        // use a silly race-condition laden loop trying to figure out whether
+        // a file with this name already exists or not and if so then generate
+        // a different output name for the file
+        for (unsigned i=0; i<10000; ++i)
+        {
+            const QFileInfo dst_info(dst_file);
+            if (!dst_info.exists())
+                break;
+            // if the destination file exists *from before* we're
+            // going to overwrite it. The user should have been confirmed
+            // for this, and it should be fine at this point.
+            // So only try to resolve a name collision if we're trying to
+            // write an output file by the same name multiple times
+            if (mFileNames.find(dst_file) == mFileNames.end())
+                break;
+            // generate a new name.
+            dst_name = filename.isEmpty()
+                       ? QString("%1_%2").arg(src_name).arg(i)
+                       : QString("%1_%2").arg(filename).arg(i);
+            dst_file = app::JoinPath(dst_path, dst_name);
+        }
+        return dst_file;
+    }
+    QString MapFileToFilesystem(const QString& uri) const
+    {
+        return MapWorkspaceUri(uri, mWorkspaceDir);
+    }
+    QString MapFileToPackage(const QString& file) const
+    {
+        ASSERT(file.startsWith(mPackageDir));
+        QString ret = file;
+        ret.remove(0, mPackageDir.count());
+        if (ret.startsWith("/") || ret.startsWith("\\"))
+            ret.remove(0, 1);
+        ret = ret.replace("\\", "/");
+        return QString("pck://%1").arg(ret);
+    }
+    unsigned GetNumErrors() const
+    { return mNumErrors; }
+    unsigned GetNumFilesCopied() const
+    { return mNumCopies; }
+private:
+    void CopyFileBuffer(const QString& src, const QString& dst)
+    {
+        // if src equals dst then we can actually skip the copy, no?
+        if (src == dst)
+        {
+            DEBUG("Skipping copy of file onto itself. [src='%1', dst='%2']", src, dst);
+            return;
+        }
+        auto [success, error] = app::CopyFile(src, dst);
+        if (!success)
+        {
+            ERROR("Failed to copy file. [src='%1', dst='%2' error=%3]", src, dst, error);
+            mNumErrors++;
+            return;
+        }
+        mNumCopies++;
+        DEBUG("File copy done. [src='%1', dst='%2']", src, dst);
+    }
+private:
+    const QString mPackageDir;
+    const QString mWorkspaceDir;
+    unsigned mNumErrors = 0;
+    unsigned mNumCopies = 0;
+    std::unordered_map<QString, QString> mFileMap;
+    std::unordered_set<QString> mFileNames;
+    std::unordered_map<std::string, std::string> mUriMapping;
+};
+
+class GfxTexturePacker : public gfx::TexturePacker
+{
+public:
+    using ObjectHandle = gfx::TexturePacker::ObjectHandle;
+
+    GfxTexturePacker(const QString& outdir,
+                     unsigned max_width, unsigned max_height,
+                     unsigned pack_width, unsigned pack_height, unsigned padding,
+                     bool resize_large, bool pack_small)
         : kOutDir(outdir)
         , kMaxTextureWidth(max_width)
         , kMaxTextureHeight(max_height)
@@ -114,11 +691,12 @@ public:
         , kResizeLargeTextures(resize_large)
         , kPackSmallTextures(pack_small)
     {}
-
-    virtual void PackShader(ObjectHandle instance, const std::string& file) override
+   ~GfxTexturePacker()
     {
-        // todo: the shader type/path (es2 or 3)
-        mShaderMap[instance] = CopyFile(file, "shaders/es2");
+        for (const auto& temp : mTempFiles)
+        {
+            QFile::remove(temp);
+        }
     }
     virtual void PackTexture(ObjectHandle instance, const std::string& file) override
     {
@@ -128,38 +706,21 @@ public:
     {
         mTextureMap[instance].rect = box;
     }
-    virtual void SetTextureFlag(ObjectHandle instance, gfx::Packer::TextureFlags flags, bool on_off) override
+    virtual void SetTextureFlag(ObjectHandle instance, gfx::TexturePacker::TextureFlags flags, bool on_off) override
     {
-        if (flags == gfx::Packer::TextureFlags::CanCombine)
+        if (flags == gfx::TexturePacker::TextureFlags::CanCombine)
             mTextureMap[instance].can_be_combined = on_off;
-        else if (flags == gfx::Packer::TextureFlags::AllowedToPack)
+        else if (flags == gfx::TexturePacker::TextureFlags::AllowedToPack)
             mTextureMap[instance].allowed_to_combine = on_off;
-        else if (flags == gfx::Packer::TextureFlags::AllowedToResize)
+        else if (flags == gfx::TexturePacker::TextureFlags::AllowedToResize)
             mTextureMap[instance].allowed_to_resize = on_off;
         else BUG("Unhandled texture packing flag.");
-    }
-    virtual void PackFont(ObjectHandle instance, const std::string& file) override
-    {
-        mFontMap[instance] = CopyFile(file, "fonts");
-    }
-
-    virtual std::string GetPackedShaderId(ObjectHandle instance) const override
-    {
-        auto it = mShaderMap.find(instance);
-        ASSERT(it != std::end(mShaderMap));
-        return it->second;
     }
     virtual std::string GetPackedTextureId(ObjectHandle instance) const override
     {
         auto it = mTextureMap.find(instance);
         ASSERT(it != std::end(mTextureMap));
         return it->second.file;
-    }
-    virtual std::string GetPackedFontId(ObjectHandle instance) const override
-    {
-        auto it = mFontMap.find(instance);
-        ASSERT(it != std::end(mFontMap));
-        return it->second;
     }
     virtual gfx::FRect GetPackedTextureBox(ObjectHandle instance) const override
     {
@@ -170,7 +731,7 @@ public:
 
     using TexturePackingProgressCallback = std::function<void (std::string, int, int)>;
 
-    void PackTextures(TexturePackingProgressCallback  progress)
+    void PackTextures(TexturePackingProgressCallback  progress, MyResourcePacker& packer)
     {
         if (mTextureMap.empty())
             return;
@@ -208,7 +769,7 @@ public:
         };
 
         struct GeneratedTextureEntry {
-            QString  texture_file;
+            QString uri;
             // box of the texture that was packed
             // now inside the texture_file
             float xpos   = 0;
@@ -259,7 +820,7 @@ public:
             // somehow wrong but an image that should have 24 bits for depth gets
             // reported as 32bit when QImage loads it.
             std::vector<char> img_data;
-            if (!app::ReadAsBinary(src_file, img_data))
+            if (!app::ReadBinaryFile(src_file, img_data))
             {
                 ERROR("Failed to open image file. [file='%1']", src_file);
                 mNumErrors++;
@@ -355,6 +916,7 @@ public:
                 img_name   = info.baseName() + ".png";
                 // map the input image to an image in /tmp/
                 image_map[tex.file] = temp;
+                mTempFiles.push_back(temp);
             }
             else
             {
@@ -387,7 +949,7 @@ public:
                 self.height = 1.0f;
                 self.xpos   = 0.0f;
                 self.ypos   = 0.0f;
-                self.texture_file = app::FromUtf8(CopyFile(app::ToUtf8(img_file), "textures", img_name));
+                self.uri    = packer.MapFileToPackage(packer.CopyFile(img_file, "textures", img_name));
                 relocation_map[tex.file] = std::move(self);
             }
         } // for
@@ -427,11 +989,11 @@ public:
                     QString file = image_map[rc.cookie];
 
                     GeneratedTextureEntry gen;
-                    gen.texture_file = app::FromUtf8(CopyFile(app::ToUtf8(file), "textures"));
-                    gen.width = 1.0f;
+                    gen.uri    = packer.MapFileToPackage(packer.CopyFile(file, "textures"));
+                    gen.width  = 1.0f;
                     gen.height = 1.0f;
-                    gen.xpos = 0.0f;
-                    gen.ypos = 0.0f;
+                    gen.xpos   = 0.0f;
+                    gen.ypos   = 0.0f;
                     relocation_map[rc.cookie] = gen;
                     sources.erase(first_success);
                     continue;
@@ -468,7 +1030,8 @@ public:
                     {
                         ERROR("Failed to open texture packing image. [file='%1']", file);
                         mNumErrors++;
-                    } else
+                    }
+                    else
                     {
                         painter.drawPixmap(dst, img, src);
                     }
@@ -501,13 +1064,13 @@ public:
                     const auto xpos = rc.xpos + kTexturePadding;
                     const auto ypos = rc.ypos + kTexturePadding;
                     GeneratedTextureEntry gen;
-                    gen.texture_file = QString("pck://textures/%1").arg(name);
-                    gen.width = (float) width / pack_width;
-                    gen.height = (float) height / pack_height;
-                    gen.xpos = (float) xpos / pack_width;
-                    gen.ypos = (float) ypos / pack_height;
+                    gen.uri    = app::toString("pck://textures/%1", name);
+                    gen.width  = (float)width / pack_width;
+                    gen.height = (float)height / pack_height;
+                    gen.xpos   = (float)xpos / pack_width;
+                    gen.ypos   = (float)ypos / pack_height;
                     relocation_map[rc.cookie] = gen;
-                    DEBUG("New image packing entry. [id='%1', dst='%2']", rc.cookie, gen.texture_file);
+                    DEBUG("New image packing entry. [id='%1', dst='%2']", rc.cookie, gen.uri);
                 }
 
                 // done with these.
@@ -541,104 +1104,15 @@ public:
             const auto original_rect_width  = original_rect.GetWidth();
             const auto original_rect_height = original_rect.GetHeight();
 
-            tex.file = app::ToUtf8(relocation.texture_file);
+            tex.file = app::ToUtf8(relocation.uri);
             tex.rect = gfx::FRect(relocation.xpos + original_rect_x * relocation.width,
                                   relocation.ypos + original_rect_y * relocation.height,
                                   relocation.width * original_rect_width,
                                   relocation.height * original_rect_height);
         }
     }
-
-
-    size_t GetNumErrors() const
+    unsigned GetNumErrors() const
     { return mNumErrors; }
-    size_t GetNumFilesCopied() const
-    { return mNumFilesCopied; }
-
-    std::string CopyFile(const std::string& file, const QString& where, const QString& name = "")
-    {
-        auto it = mResourceMap.find(file);
-        if (it != std::end(mResourceMap))
-        {
-            DEBUG("Skipping duplicate file copy. [file='%1']", file);
-            return it->second;
-        }
-
-        if (!app::MakePath(app::JoinPath(kOutDir, where)))
-        {
-            ERROR("Failed to create directory. [dir='%1/%2']", kOutDir, where);
-            mNumErrors++;
-            // todo: what to return on error ?
-            return "";
-        }
-
-        // this will actually resolve the file path.
-        // using the resolution scheme in Workspace.
-        const QFileInfo src_info(app::FromUtf8(file));
-        if (!src_info.exists())
-        {
-            ERROR("Could not find file. [file='%1']", file);
-            mNumErrors++;
-            // todo: what to return on error ?
-            return "";
-        }
-
-        const QString& src_file = src_info.absoluteFilePath(); // resolved path.
-        const QString& src_name = src_info.fileName();
-        QString dst_name = name;
-        if (dst_name.isEmpty())
-            dst_name = src_name;
-        QString dst_file = app::JoinPath(kOutDir, app::JoinPath(where, dst_name));
-        // try to generate a different name for the file when a file
-        // by the same name already exists.
-        unsigned attempt = 0;
-        while (true)
-        {
-            const QFileInfo dst_info(dst_file);
-            // if there's no file by this name we're good to go
-            if (!dst_info.exists())
-                break;
-            // if the destination file exists *from before* we're
-            // going to overwrite it. The user should have been confirmed
-            // for this and it should be fine at this point.
-            // So only try to resolve a name collision if we're trying to
-            // write an output file by the same name multiple times
-            if (mFileNames.find(dst_file) == mFileNames.end())
-                break;
-            // generate a new name.
-            dst_name = QString("%1_%2").arg(attempt).arg(src_name);
-            dst_file = app::JoinPath(kOutDir, app::JoinPath(where, dst_name));
-            attempt++;
-        }
-        CopyFileBuffer(src_file, dst_file);
-        // keep track of which files we wrote.
-        mFileNames.insert(dst_file);
-
-        // generate the resource identifier
-        const auto& pckid = app::ToUtf8(QString("pck://%1/%2").arg(where).arg(dst_name));
-
-        mResourceMap[file] = pckid;
-        return pckid;
-    }
-private:
-    void CopyFileBuffer(const QString& src, const QString& dst)
-    {
-        // if src equals dst then we can actually skip the copy, no?
-        if (src == dst)
-        {
-            DEBUG("Skipping copy of file onto itself. [src='%1', dst='%2']", src, dst);
-            return;
-        }
-        auto [success, error] = app::CopyFile(src, dst);
-        if (!success)
-        {
-            ERROR("Failed to copy file. [src='%1', dst='%2' error=%3]", src, dst, error);
-            mNumErrors++;
-            return;
-        }
-        mNumFilesCopied++;
-        DEBUG("File copy done. [src='%1', dst='%2']", src, dst);
-    }
 private:
     const QString kOutDir;
     const unsigned kMaxTextureHeight = 0;
@@ -648,13 +1122,7 @@ private:
     const unsigned kTexturePadding = 0;
     const bool kResizeLargeTextures = true;
     const bool kPackSmallTextures = true;
-    std::size_t mNumErrors = 0;
-    std::size_t mNumFilesCopied = 0;
-
-    // maps from object to shader.
-    std::unordered_map<ObjectHandle, std::string> mShaderMap;
-    // maps from object to font.
-    std::unordered_map<ObjectHandle, std::string> mFontMap;
+    unsigned mNumErrors = 0;
 
     struct TextureSource {
         std::string file;
@@ -664,17 +1132,131 @@ private:
         bool allowed_to_combine = true;
     };
     std::unordered_map<ObjectHandle, TextureSource> mTextureMap;
-
-    // resource mapping from source to packed resource id.
-    std::unordered_map<std::string, std::string> mResourceMap;
-    // filenames of files we've written.
-    std::unordered_set<QString> mFileNames;
+    std::vector<QString> mTempFiles;
 };
+
 
 } // namespace
 
 namespace app
 {
+ResourceArchive::ResourceArchive()
+{
+    mZip.setAutoClose(true);
+    mZip.setFileNameCodec("UTF-8");
+    mZip.setUtf8Enabled(true);
+    mZip.setZip64Enabled(true);
+}
+
+bool ResourceArchive::Open(const QString& zip_file)
+{
+    mFile.setFileName(zip_file);
+    if (!mFile.open(QIODevice::ReadOnly))
+    {
+        ERROR("Failed to open zip file for reading. [file='%1', error='%2']", mZipFile, mFile.errorString());
+        return false;
+    }
+    mZip.setIoDevice(&mFile);
+    if (!mZip.open(QuaZip::mdUnzip))
+    {
+        ERROR("QuaZip open failed. [code=%1]", mZip.getZipError());
+        return false;
+    }
+    DEBUG("QuaZip open successful. [file='%1']", mZipFile);
+    mZip.goToFirstFile();
+    do
+    {
+        QuaZipFileInfo info;
+        if (mZip.getCurrentFileInfo(&info))
+        {
+            DEBUG("Found file in zip. [file='%1']", info.name);
+        }
+    } while (mZip.goToNextFile());
+
+    QByteArray content_bytes;
+    QByteArray property_bytes;
+    if (!ReadFile("content.json", &content_bytes))
+    {
+        ERROR("Could not find content.json file in zip archive. [file='%1']", zip_file);
+        return false;
+    }
+    if (!ReadFile("properties.json", &property_bytes))
+    {
+        ERROR("Could not find properties.json file in zip archive. [file='%1']", zip_file);
+        return false;
+    }
+    data::JsonObject content;
+    const auto [ok, error] = content.ParseString(content_bytes.constData(), content_bytes.size());
+    if (!ok)
+    {
+        ERROR("Failed to parse JSON content. [error='%1']", error);
+        return false;
+    }
+
+    LoadMaterials<gfx::MaterialClass>("materials", content, mResources);
+    LoadResources<gfx::KinematicsParticleEngineClass>("particles", content, mResources);
+    LoadResources<gfx::PolygonClass>("shapes", content, mResources);
+    LoadResources<game::EntityClass>("entities", content, mResources);
+    LoadResources<game::SceneClass>("scenes", content, mResources);
+    LoadResources<game::TilemapClass>("tilemaps", content, mResources);
+    LoadResources<Script>("scripts", content, mResources);
+    LoadResources<DataFile>("data_files", content, mResources);
+    LoadResources<audio::GraphClass>("audio_graphs", content, mResources);
+    LoadResources<uik::Window>("uis", content, mResources);
+
+    // load property JSONs
+    const auto& docu  = QJsonDocument::fromJson(property_bytes);
+    const auto& props = docu.object();
+    for (auto& resource : mResources)
+    {
+        resource->LoadProperties(props);
+    }
+
+    // Partition the resources such that the data objects come in first.
+    // This is done because some resources such as tilemaps refer to the
+    // data resources by URI and in order for the URI remapping to work
+    // the packer must have packed the data object before packing the
+    // tilemap object.
+    std::partition(mResources.begin(), mResources.end(),
+        [](const auto& resource) {
+            return resource->IsDataFile();
+        });
+
+    mZipFile = zip_file;
+    return true;
+}
+
+bool ResourceArchive::ReadFile(const QString& file, QByteArray* array) const
+{
+    if (!FindZipFile(file))
+        return false;
+    QuaZipFile zip_file(&mZip);
+    zip_file.open(QIODevice::ReadOnly);
+    *array = zip_file.readAll();
+    zip_file.close();
+    return true;
+}
+
+bool ResourceArchive::FindZipFile(const QString& unix_style_name) const
+{
+    if (!mZip.goToFirstFile())
+        return false;
+    // on Windows the zip file paths are also windows style. (why, but of course)
+    QString windows_style_name = unix_style_name;
+    windows_style_name.replace("/", "\\");
+    do
+    {
+        QuaZipFileInfo info;
+        if (!mZip.getCurrentFileInfo(&info))
+            return false;
+        if ((info.name == unix_style_name) ||
+            (info.name == windows_style_name))
+            return true;
+    }
+    while (mZip.goToNextFile());
+    ERROR("Failed to find file in zip. [file='%1']", unix_style_name);
+    return false;
+}
 
 Workspace::Workspace(const QString& dir)
   : mWorkspaceDir(FixWorkspacePath(dir))
@@ -906,6 +1488,25 @@ std::shared_ptr<const game::EntityClass> Workspace::GetEntityClassById(const QSt
     return nullptr;
 }
 
+std::shared_ptr<const game::TilemapClass> Workspace::GetTilemapClassById(const QString& id) const
+{
+    for (const auto& resource : mResources)
+    {
+        if (resource->GetType() != Resource::Type::Tilemap)
+            continue;
+        else if (resource->GetId() != id)
+            continue;
+        return ResourceCast<game::TilemapClass>(*resource).GetSharedResource();
+    }
+    BUG("No such tilemap class.");
+    return nullptr;
+}
+
+std::shared_ptr<const game::TilemapClass> Workspace::GetTilemapClassById(const std::string& id) const
+{
+    return GetTilemapClassById(FromUtf8(id));
+}
+
 engine::ClassHandle<const audio::GraphClass> Workspace::FindAudioGraphClassById(const std::string& id) const
 {
     return FindClassHandleById<audio::GraphClass>(id, Resource::Type::AudioGraph);
@@ -1021,16 +1622,49 @@ engine::ClassHandle<const game::SceneClass> Workspace::FindSceneClassById(const 
     return ret;
 }
 
-engine::GameDataHandle Workspace::LoadGameData(const std::string& URI) const
+engine::ClassHandle<const game::TilemapClass> Workspace::FindTilemapClassById(const std::string& id) const
+{
+    return FindClassHandleById<game::TilemapClass>(id, Resource::Type::Tilemap);
+}
+
+engine::EngineDataHandle Workspace::LoadEngineDataUri(const std::string& URI) const
 {
     const auto& file = MapFileToFilesystem(app::FromUtf8(URI));
     DEBUG("URI '%1' => '%2'", URI, file);
-    return GameDataFileBuffer::LoadFromFile(file);
+    return EngineBuffer::LoadFromFile(file);
 }
 
-engine::GameDataHandle Workspace::LoadGameDataFromFile(const std::string& filename) const
+engine::EngineDataHandle Workspace::LoadEngineDataFile(const std::string& filename) const
 {
-    return GameDataFileBuffer::LoadFromFile(app::FromUtf8(filename));
+    return EngineBuffer::LoadFromFile(app::FromUtf8(filename));
+}
+engine::EngineDataHandle Workspace::LoadEngineDataId(const std::string& id) const
+{
+    for (size_t i=0; i<mVisibleCount; ++i)
+    {
+        const auto& resource = mResources[i];
+        if (resource->GetIdUtf8() != id)
+            continue;
+
+        std::string uri;
+        if (resource->IsDataFile())
+        {
+            const DataFile* data = nullptr;
+            resource->GetContent(&data);
+            uri = data->GetFileURI();
+        }
+        else if (resource->IsScript())
+        {
+            const Script* script = nullptr;
+            resource->GetContent(&script);
+            uri = script->GetFileURI();
+        }
+        else BUG("Unknown ID in engine data loading.");
+        const auto& file = MapFileToFilesystem(uri);
+        DEBUG("URI '%1' => '%2'", uri, file);
+        return EngineBuffer::LoadFromFile(file);
+    }
+    return nullptr;
 }
 
 gfx::ResourceHandle Workspace::LoadResource(const std::string& URI)
@@ -1038,7 +1672,7 @@ gfx::ResourceHandle Workspace::LoadResource(const std::string& URI)
     // static map of resources that are part of the application, i.e.
     // app://something. They're not expected to change.
     static std::unordered_map<std::string,
-            std::shared_ptr<const GraphicsFileBuffer>> application_resources;
+            std::shared_ptr<const GraphicsBuffer>> application_resources;
     if (base::StartsWith(URI, "app://")) {
         auto it = application_resources.find(URI);
         if (it != application_resources.end())
@@ -1046,7 +1680,7 @@ gfx::ResourceHandle Workspace::LoadResource(const std::string& URI)
     }
     const auto& file = MapFileToFilesystem(app::FromUtf8(URI));
     DEBUG("URI '%1' => '%2'", URI, file);
-    auto ret = GraphicsFileBuffer::LoadFromFile(file);
+    auto ret = GraphicsBuffer::LoadFromFile(file);
     if (base::StartsWith(URI, "app://")) {
         application_resources[URI] = ret;
     }
@@ -1059,6 +1693,16 @@ audio::SourceStreamHandle Workspace::OpenAudioStream(const std::string& URI,
     const auto& file = MapFileToFilesystem(app::FromUtf8(URI));
     DEBUG("URI '%1' => '%2'", URI, file);
     return audio::OpenFileStream(app::ToUtf8(file), strategy, enable_file_caching);
+}
+
+game::TilemapDataHandle Workspace::LoadTilemapData(const game::Loader::TilemapDataDesc& desc) const
+{
+    const auto& file = MapFileToFilesystem(desc.uri);
+    DEBUG("URI '%1' => '%2'", desc.uri, file);
+    if (desc.read_only)
+        return TilemapMemoryMap::OpenFilemap(file);
+
+    return TilemapBuffer::LoadFromFile(file);
 }
 
 bool Workspace::LoadWorkspace()
@@ -1094,6 +1738,29 @@ bool Workspace::SaveWorkspace()
 QString Workspace::GetName() const
 {
     return mWorkspaceDir;
+}
+
+QString Workspace::GetDir() const
+{
+    return mWorkspaceDir;
+}
+
+QString Workspace::GetSubDir(const QString& dir, bool create) const
+{
+    const auto& path = app::JoinPath(mWorkspaceDir, dir);
+
+    if (create)
+    {
+        QDir d;
+        d.setPath(path);
+        if (d.exists())
+            return path;
+        if (!d.mkpath(path))
+        {
+            ERROR("Failed to create workspace sub directory. [path='%1']", path);
+        }
+    }
+    return path;
 }
 
 QString Workspace::MapFileToWorkspace(const QString& filepath) const
@@ -1185,70 +1852,6 @@ QString Workspace::MapFileToFilesystem(const std::string& uri) const
     return MapFileToFilesystem(FromUtf8(uri));
 }
 
-template<typename ClassType>
-bool LoadResources(const char* type,
-                   const data::Reader& data,
-                   std::vector<std::unique_ptr<Resource>>& vector)
-{
-    DEBUG("Loading %1", type);
-    bool success = true;
-    for (unsigned i=0; i<data.GetNumChunks(type); ++i)
-    {
-        const auto& chunk = data.GetReadChunk(type, i);
-        std::string name;
-        std::string id;
-        if (!chunk->Read("resource_name", &name) ||
-            !chunk->Read("resource_id", &id))
-        {
-            ERROR("Unexpected JSON. Maybe old workspace version?");
-            success = false;
-            continue;
-        }
-        std::optional<ClassType> ret = ClassType::FromJson(*chunk);
-        if (!ret.has_value())
-        {
-            ERROR("Failed to load resource '%1'", name);
-            success = false;
-            continue;
-        }
-        vector.push_back(std::make_unique<GameResource<ClassType>>(std::move(ret.value()), FromUtf8(name)));
-        DEBUG("Loaded resource '%1'", name);
-    }
-    return success;
-}
-
-template<typename ClassType>
-bool LoadMaterials(const char* type,
-                   const data::Reader& data,
-                   std::vector<std::unique_ptr<Resource>>& vector)
-{
-    DEBUG("Loading %1", type);
-    bool success = true;
-    for (unsigned i=0; i<data.GetNumChunks(type); ++i)
-    {
-        const auto& chunk = data.GetReadChunk(type, i);
-        std::string name;
-        std::string id;
-        if (!chunk->Read("resource_name", &name) ||
-            !chunk->Read("resource_id", &id))
-        {
-            ERROR("Unexpected JSON. Maybe old workspace version?");
-            success = false;
-            continue;
-        }
-        auto ret = ClassType::FromJson(*chunk);
-        if (!ret)
-        {
-            ERROR("Failed to load resource '%1'", name);
-            success = false;
-            continue;
-        }
-        vector.push_back(std::make_unique<MaterialResource>(std::move(ret), FromUtf8(name)));
-        DEBUG("Loaded resource '%1'", name);
-    }
-    return success;
-}
-
 bool Workspace::LoadContent(const QString& filename)
 {
     data::JsonFile file;
@@ -1266,15 +1869,16 @@ bool Workspace::LoadContent(const QString& filename)
     LoadResources<gfx::PolygonClass>("shapes", root, mResources);
     LoadResources<game::EntityClass>("entities", root, mResources);
     LoadResources<game::SceneClass>("scenes", root, mResources);
+    LoadResources<game::TilemapClass>("tilemaps", root, mResources);
     LoadResources<Script>("scripts", root, mResources);
     LoadResources<DataFile>("data_files", root, mResources);
     LoadResources<audio::GraphClass>("audio_graphs", root, mResources);
     LoadResources<uik::Window>("uis", root, mResources);
 
-    // setup an invariant that states that the primitive materials
+    // create an invariant that states that the primitive materials
     // are in the list of resources after the user defined ones.
-    // this way the the addressing scheme (when user clicks on an item
-    // in the list of resources) doesn't need to change and it's possible
+    // this way the addressing scheme (when user clicks on an item
+    // in the list of resources) doesn't need to change, and it's possible
     // to easily limit the items to be displayed only to those that are
     // user defined.
     auto primitives_start = std::stable_partition(mResources.begin(), mResources.end(),
@@ -1305,7 +1909,7 @@ bool Workspace::SaveContent(const QString& filename) const
     const auto [ok, error] = file.Save(app::ToUtf8(filename));
     if (!ok)
     {
-        ERROR("Failed to save JSON content file '%1'", filename);
+        ERROR("Failed to save JSON content file. [file='%1']", filename);
         return false;
     }
     INFO("Saved workspace content in '%1'", filename);
@@ -1317,7 +1921,7 @@ bool Workspace::SaveProperties(const QString& filename) const
     QFile file(filename);
     if (!file.open(QIODevice::WriteOnly))
     {
-        ERROR("Failed to open file: '%1'", filename);
+        ERROR("Failed to open properties file for writing. [file='%1']", filename);
         return false;
     }
 
@@ -1557,6 +2161,11 @@ Workspace::ResourceList Workspace::ListPrimitiveMaterials() const
     return ListResources(Resource::Type::Material, true, true);
 }
 
+Workspace::ResourceList Workspace::ListUserDefinedMaps() const
+{
+    return ListResources(Resource::Type::Tilemap, false, true);
+}
+
 Workspace::ResourceList Workspace::ListUserDefinedScripts() const
 {
     return ListResources(Resource::Type::Script, false, true);
@@ -1626,9 +2235,10 @@ Workspace::ResourceList Workspace::ListResources(Resource::Type type, bool primi
         if (resource->IsPrimitive() == primitive &&
             resource->GetType() == type)
         {
-            ListItem item;
-            item.name = resource->GetName();
-            item.id   = resource->GetId();
+            ResourceListItem item;
+            item.name     = resource->GetName();
+            item.id       = resource->GetId();
+            item.resource = resource.get();
             list.push_back(item);
         }
     }
@@ -1644,15 +2254,97 @@ Workspace::ResourceList Workspace::ListResources(Resource::Type type, bool primi
 Workspace::ResourceList Workspace::ListCursors() const
 {
     ResourceList list;
-    ListItem arrow;
+    ResourceListItem arrow;
     arrow.name = "Arrow Cursor";
     arrow.id   = "_arrow_cursor";
+    arrow.resource = FindResourceById("_arrow_cursor");
     list.push_back(arrow);
-    ListItem block;
+    ResourceListItem block;
     block.name = "Block Cursor";
     block.id   = "_block_cursor";
+    block.resource = FindResourceById("_block_cursor");
     list.push_back(block);
     return list;
+}
+
+Workspace::ResourceList Workspace::ListDataFiles() const
+{
+    return ListResources(Resource::Type::DataFile, false, false);
+}
+
+ResourceList Workspace::ListDependencies(const QModelIndexList& list) const
+{
+    std::vector<size_t> indices;
+    for (const auto& index : list)
+        indices.push_back(index.row());
+
+    return ListDependencies(std::move(indices));
+}
+ResourceList Workspace::ListDependencies(std::vector<size_t> indices) const
+{
+    std::unordered_map<QString, Resource*> resource_map;
+    for (size_t i=0; i<mVisibleCount; ++i)
+    {
+        auto& res = mResources[i];
+        resource_map[res->GetId()] = res.get();
+    }
+
+    std::unordered_set<QString> unique_ids;
+
+    for (size_t index : indices)
+    {
+        const auto& res = mResources[index];
+        QStringList deps = res->ListDependencies();
+
+        std::stack<QString> stack;
+        for (auto id : deps)
+            stack.push(id);
+
+        while (!stack.empty())
+        {
+            auto top_id = stack.top();
+            auto* resource = resource_map[top_id];
+            // if it's a primitive resource then we're not going to find it here
+            // and there's no need to explore it
+            if (resource == nullptr)
+            {
+                stack.pop();
+                continue;
+            }
+            // if we've already seen this resource we can skip
+            // exploring from here.
+            if (base::Contains(unique_ids, top_id))
+            {
+                stack.pop();
+                continue;
+            }
+
+            unique_ids.insert(top_id);
+
+            deps = resource->ListDependencies();
+            for (auto id : deps)
+                stack.push(id);
+        }
+    }
+
+    ResourceList ret;
+    for (const auto& id : unique_ids)
+    {
+        auto* res = resource_map[id];
+
+        ResourceListItem item;
+        item.name = res->GetName();
+        item.id   = res->GetId();
+        item.icon = res->GetIcon();
+        item.resource = res;
+        ret.push_back(item);
+    }
+    return ret;
+}
+
+ResourceList Workspace::ListDependencies(std::size_t index) const
+{
+    return ListDependencies(std::vector<size_t>{index});
 }
 
 void Workspace::SaveResource(const Resource& resource)
@@ -1678,14 +2370,16 @@ void Workspace::SaveResource(const Resource& resource)
     // insert at the end of the visible range which is from [0, mVisibleCount)
     mResources.insert(mResources.begin() + mVisibleCount, resource.Copy());
 
-    // careful! endInsertRows will trigger the view proxy to refetch the contents.
-    // make sure to update this property before endInsertRows or otherwise
-    // we'll hit an assert incorrectly in GetUserDefinedProperty.
+    // careful! endInsertRows will trigger the view proxy to re-fetch the contents.
+    // make sure to update this property before endInsertRows otherwise
+    // we'll hit ASSERT incorrectly in GetUserDefinedProperty.
     mVisibleCount++;
 
     endInsertRows();
 
-    auto& back = mResources[mVisibleCount];
+    auto& back = mResources[mVisibleCount-1];
+    ASSERT(back->GetId() == resource.GetId());
+    ASSERT(back->GetName() == resource.GetName());
     emit NewResourceAvailable(back.get());
 
     INFO("Saved new resource '%1'", resource.GetName());
@@ -1741,15 +2435,41 @@ bool Workspace::IsValidDrawable(const QString& klass) const
     return false;
 }
 
+bool Workspace::IsValidTilemap(const QString& id) const
+{
+    for (const auto& resource : mResources)
+    {
+        if (resource->GetId() == id &&  resource->IsTilemap())
+            return true;
+    }
+    return false;
+}
+
 bool Workspace::IsValidScript(const QString& id) const
 {
     for (const auto& resource : mResources)
     {
-        if (resource->GetId() == id &&
-            resource->IsScript())
+        if (resource->GetId() == id && resource->IsScript())
             return true;
     }
     return false;
+}
+
+bool Workspace::IsUserDefinedResource(const QString& id) const
+{
+    for (const auto& res : mResources)
+    {
+        if (res->GetId() == id)
+        {
+            return !res->IsPrimitive();
+        }
+    }
+    BUG("No such material was found.");
+    return false;
+}
+bool Workspace::IsUserDefinedResource(const std::string& id) const
+{
+    return IsUserDefinedResource(FromUtf8(id));
 }
 
 Resource& Workspace::GetResource(size_t index)
@@ -1877,14 +2597,57 @@ void Workspace::DeleteResources(std::vector<size_t> indices)
 {
     RECURSION_GUARD(this, "ResourceList");
 
+    std::vector<size_t> relatives;
+    // scan the list of indices for associated data resources. 
+    for (auto i : indices)
+    { 
+        // for each tilemap resource
+        // look for the data resources associated with the map layers.
+        // Add any data object IDs to the list of new indices of resources
+        // to be deleted additionally.
+        const auto& res = mResources[i];
+        if (res->IsTilemap())
+        {
+            const game::TilemapClass* map = nullptr;
+            res->GetContent(&map);
+            for (unsigned i = 0; i < map->GetNumLayers(); ++i)
+            {
+                const auto& layer = map->GetLayer(i);
+                for (size_t j = 0; j < mVisibleCount; ++j)
+                {
+                    const auto& res = mResources[j];
+                    if (!res->IsDataFile())
+                        continue;
+
+                    const app::DataFile* data = nullptr;
+                    res->GetContent(&data);
+                    if (data->GetTypeTag() == DataFile::TypeTag::TilemapData &&
+                        data->GetOwnerId() == layer.GetId())
+                    {
+                        relatives.push_back(j);
+                        break;
+                    }
+                }
+            }
+        }
+    }
+    // combine the original indices together with the associated
+    // resource indices.
+    base::AppendVector(indices, relatives);
+
     std::sort(indices.begin(), indices.end(), std::less<size_t>());
+    // remove dupes. dupes could happen if the resource was already
+    // in the original indices list and then was added for the second
+    // time when scanning resources mentioned in the indices list for
+    // associated resources that need to be deleted.
+    indices.erase(std::unique(indices.begin(), indices.end()), indices.end());
 
     // because the high probability of unwanted recursion
     // messing this iteration up (for example by something
     // calling back to this workspace from Resource
     // deletion signal handler and adding a new resource) we
     // must take some special care here.
-    // So therefore first put the resources to be deleted into
+    // So, therefore first put the resources to be deleted into
     // a separate container while iterating and removing from the
     // removing from the primary list and only then invoke the signal
     // for each resource.
@@ -1910,27 +2673,67 @@ void Workspace::DeleteResources(std::vector<size_t> indices)
         emit ResourceToBeDeleted(carcass.get());
     }
 
-    // script resources are special in the sense that they're the only
-    // resources where the underlying file system content file is actually
-    // created by this editor. for everything else, shaders, image files
-    // and font files the resources are created by other tools/applications
+    // script and tilemap layer data resources are special in the sense that
+    // they're the only resources where the underlying filesystem data file
+    // is actually created by this editor. for everything else, shaders,
+    // image files and font files the resources are created by other tools,
     // and we only keep references to those files.
-    // So for scripts when the script resource is deleted we're actually
-    // going to delete the underlying filesystem file as well.
     for (const auto& carcass : graveyard)
     {
-        if (!carcass->IsScript())
-            continue;
-        Script* script = nullptr;
-        carcass->GetContent(&script);
-        const auto& file = MapFileToFilesystem(script->GetFileURI());
-        if (!QFile::remove(file))
+        QString dead_file;
+        if (carcass->IsScript())
         {
-            ERROR("Failed to remove file '%1'", file);
+            // for scripts when the script resource is deleted we're actually
+            // going to delete the underlying filesystem file as well.
+            Script* script = nullptr;
+            carcass->GetContent(&script);
+            dead_file = MapFileToFilesystem(script->GetFileURI());
+        }
+        else if (carcass->IsDataFile())
+        {
+            // data files that link to a tilemap layer are also going to be
+            // deleted when the map is deleted. These files would be completely
+            // useless without any way to actually use them for anything.
+            DataFile* data = nullptr;
+            carcass->GetContent(&data);
+            if (data->GetTypeTag() == DataFile::TypeTag::TilemapData)
+                dead_file = MapFileToFilesystem(data->GetFileURI());
+        }
+        if (dead_file.isEmpty())
+            continue;
+
+        if (!QFile::remove(dead_file))
+        {
+            ERROR("Failed to delete file. [file='%1']", dead_file);
         }
         else
         {
-            INFO("Deleted '%1'", file);
+            INFO("Deleted file '%1'.", dead_file);
+        }
+    }
+}
+
+void Workspace::DeleteResource(const std::string& id)
+{
+    for (size_t i=0; i<GetNumUserDefinedResources(); ++i)
+    {
+        const auto& res = GetUserDefinedResource(i);
+        if (res.GetIdUtf8() == id)
+        {
+            DeleteResource(i);
+            return;
+        }
+    }
+}
+void Workspace::DeleteResource(const QString& id)
+{
+    for (size_t i=0; i<GetNumUserDefinedResources(); ++i)
+    {
+        const auto& res = GetUserDefinedResource(i);
+        if (res.GetId() == id)
+        {
+            DeleteResource(i);
+            return;
         }
     }
 }
@@ -1949,28 +2752,76 @@ void Workspace::DuplicateResources(std::vector<size_t> indices)
 
     std::sort(indices.begin(), indices.end(), std::less<size_t>());
 
+    std::map<const Resource*, size_t> insert_index;
     std::vector<std::unique_ptr<Resource>> dupes;
+
     for (int i=0; i<indices.size(); ++i)
     {
-        const auto row = indices[i];
-        const auto& resource = GetResource(row);
-        auto clone = resource.Clone();
-        clone->SetName(QString("Copy of %1").arg(resource.GetName()));
-        dupes.push_back(std::move(clone));
+        const auto row_index = indices[i];
+        const auto& src_resource = GetResource(row_index);
+
+        auto cpy_resource = src_resource.Clone();
+        cpy_resource->SetName(QString("Copy of %1").arg(src_resource.GetName()));
+
+        if (src_resource.IsTilemap())
+        {
+            const game::TilemapClass* src_map = nullptr;
+            game::TilemapClass* cpy_map = nullptr;
+            src_resource.GetContent(&src_map);
+            cpy_resource->GetContent(&cpy_map);
+            ASSERT(src_map->GetNumLayers() == cpy_map->GetNumLayers());
+            for (size_t i=0; i<src_map->GetNumLayers(); ++i)
+            {
+                const auto& src_layer = src_map->GetLayer(i);
+                const auto& src_uri   = src_layer.GetDataUri();
+                if (src_uri.empty())
+                    continue;
+                auto& cpy_layer = cpy_map->GetLayer(i);
+
+                const auto& dst_uri = base::FormatString("ws://data/%1.bin", cpy_layer.GetId());
+                const auto& src_file = MapFileToFilesystem(src_uri);
+                const auto& dst_file = MapFileToFilesystem(dst_uri);
+                const auto [success, error] = CopyFile(src_file, dst_file);
+                if (!success)
+                {
+                    WARN("Failed to duplicate tilemap layer data file. [layer='%1', file='%2', error='%3']",
+                         cpy_layer.GetName(), dst_file, error);
+                    cpy_layer.ResetDataId();
+                    cpy_layer.ResetDataUri();
+                }
+                else
+                {
+                    app::DataFile cpy_data;
+                    cpy_data.SetFileURI(dst_uri);
+                    cpy_data.SetOwnerId(cpy_layer.GetId());
+                    cpy_data.SetTypeTag(app::DataFile::TypeTag::TilemapData);
+                    const auto& cpy_data_resource_name = toString("%1 Layer Data", cpy_resource->GetName());
+                    auto cpy_data_resource = std::make_unique<app::DataResource>(cpy_data, cpy_data_resource_name);
+                    insert_index[cpy_data_resource.get()] = row_index;
+                    dupes.push_back(std::move(cpy_data_resource));
+                    cpy_layer.SetDataId(cpy_data.GetId());
+                    cpy_layer.SetDataUri(dst_uri);
+                    DEBUG("Duplicated tilemap layer data. [layer='%1', src='%2', dst='%3']",
+                          cpy_layer.GetName(), src_file, dst_file);
+                }
+            }
+        }
+        insert_index[cpy_resource.get()] = row_index;
+        dupes.push_back(std::move(cpy_resource));
     }
 
-    for (int i=0; i<(int)dupes.size(); ++i)
+    for (size_t i=0; i<dupes.size(); ++i)
     {
-        const auto pos = indices[i]+ i;
-        beginInsertRows(QModelIndex(), pos, pos);
-        auto it = mResources.begin();
-        it += pos;
-        auto* dupe = dupes[i].get();
-        mResources.insert(it, std::move(dupes[i]));
+        const auto index = insert_index[dupes[i].get()] + i;
+
+        beginInsertRows(QModelIndex(), index, index);
+
+        auto* dupe_ptr = dupes[i].get();
+        mResources.insert(mResources.begin() + index, std::move(dupes[i]));
         mVisibleCount++;
         endInsertRows();
 
-        emit NewResourceAvailable(dupe);
+        emit NewResourceAvailable(dupe_ptr);
     }
 }
 
@@ -1979,15 +2830,15 @@ void Workspace::DuplicateResource(size_t index)
     DuplicateResources(std::vector<size_t>{index});
 }
 
-bool Workspace::ExportResources(const QModelIndexList& list, const QString& filename) const
+bool Workspace::ExportResourceJson(const QModelIndexList& list, const QString& filename) const
 {
     std::vector<size_t> indices;
     for (const auto& index : list)
         indices.push_back(index.row());
-    return ExportResources(indices, filename);
+    return ExportResourceJson(indices, filename);
 }
 
-bool Workspace::ExportResources(const std::vector<size_t>& indices, const QString& filename) const
+bool Workspace::ExportResourceJson(const std::vector<size_t>& indices, const QString& filename) const
 {
     data::JsonObject json;
     for (size_t index : indices)
@@ -2015,7 +2866,7 @@ bool Workspace::ExportResources(const std::vector<size_t>& indices, const QStrin
 }
 
 // static
-bool Workspace::ImportResources(const QString& filename, std::vector<std::unique_ptr<Resource>>& resources)
+bool Workspace::ImportResourcesFromJson(const QString& filename, std::vector<std::unique_ptr<Resource>>& resources)
 {
     data::JsonFile file;
     auto [success, error] = file.Load(ToUtf8(filename));
@@ -2032,6 +2883,7 @@ bool Workspace::ImportResources(const QString& filename, std::vector<std::unique
     success = success && LoadResources<gfx::PolygonClass>("shapes", root, resources);
     success = success && LoadResources<game::EntityClass>("entities", root, resources);
     success = success && LoadResources<game::SceneClass>("scenes", root, resources);
+    success = success && LoadResources<game::TilemapClass>("tilemaps", root, resources);
     success = success && LoadResources<Script>("scripts", root, resources);
     success = success && LoadResources<DataFile>("data_files", root, resources);
     success = success && LoadResources<audio::GraphClass>("audio_graphs", root, resources);
@@ -2078,7 +2930,7 @@ void Workspace::ImportFilesAsResource(const QStringList& files)
         const QFileInfo info(file);
         if (!info.isFile())
         {
-            WARN("File '%1' is not actually a file.", file);
+            WARN("File is not actually a file. [file='%1']", file);
             continue;
         }
         const auto& name   = info.baseName();
@@ -2128,7 +2980,8 @@ void Workspace::ImportFilesAsResource(const QStringList& files)
         {
             const auto& uri = MapFileToWorkspace(file);
             DataFile data;
-            data.SetFileURI(ToUtf8(uri));
+            data.SetFileURI(uri);
+            data.SetTypeTag(DataFile::TypeTag::External);
             DataResource res(data, name);
             SaveResource(res);
             INFO("Imported new data file '%1' based on file '%2'", name, info.filePath());
@@ -2141,7 +2994,83 @@ void Workspace::Tick()
 
 }
 
-bool Workspace::PackContent(const std::vector<const Resource*>& resources, const ContentPackingOptions& options)
+bool Workspace::ExportResourceArchive(const std::vector<const Resource*>& resources, const ExportOptions& options)
+{
+    ZipArchiveExporter zip(options.zip_file, mWorkspaceDir);
+    if (!zip.Open())
+        return false;
+
+    // unfortunately we need to make copies of the resources
+    // since packaging might modify the resources yet the
+    // original resources should not be changed.
+    // todo: perhaps rethink this.. what other ways would there be ?
+    // constraints:
+    //  - don't wan to duplicate the serialization/deserialization/JSON writing
+    //  - should not know details of resources (materials, drawables etc)
+    //  - material depends on resource packer, resource packer should not then
+    //    know about material
+    std::vector<std::unique_ptr<Resource>> mutable_copies;
+    for (const auto* resource : resources)
+    {
+        ASSERT(!resource->IsPrimitive());
+        mutable_copies.push_back(resource->Copy());
+    }
+
+    // Partition the resources such that the data objects come in first.
+    // This is done because some resources such as tilemaps refer to the
+    // data resources by URI and in order for the URI remapping to work
+    // the packer must have packed the data object before packing the
+    // tilemap object.
+    std::partition(mutable_copies.begin(), mutable_copies.end(),
+        [](const auto& resource) {
+            return resource->IsDataFile();
+        });
+
+    QJsonObject properties;
+    data::JsonObject content;
+    for (auto& resource: mutable_copies)
+    {
+        resource->Pack(zip);
+        resource->Serialize(content);
+        resource->SaveProperties(properties);
+    }
+    QJsonDocument doc(properties);
+    zip.WriteText(content.ToString(), "content.json");
+    zip.WriteBytes(doc.toJson(), "properties.json");
+    zip.Close();
+    return true;
+}
+
+bool Workspace::ImportResourceArchive(ResourceArchive& zip)
+{
+    const auto& sub_folder = zip.GetImportSubFolderName();
+    const auto& name_prefix = zip.GetResourceNamePrefix();
+    ZipArchiveImporter importer(zip.mZipFile, sub_folder, mWorkspaceDir, zip.mZip);
+
+    // it seems a bit funny here to be calling "pack" when actually we're
+    // unpacking but the implementation of zip based resource packer is
+    // such that data is copied (packed) from the zip and into the workspace
+    for (size_t i=0; i<zip.mResources.size(); ++i)
+    {
+        if (zip.IsIndexIgnored(i))
+            continue;
+        auto& resource = zip.mResources[i];
+        resource->Pack(importer);
+        const auto& name = resource->GetName();
+        resource->SetName(name_prefix + name);
+    }
+
+    for (size_t i=0; i<zip.mResources.size(); ++i)
+    {
+        if (zip.IsIndexIgnored(i))
+            continue;
+        auto& resource = zip.mResources[i];
+        SaveResource(*resource);
+    }
+    return true;
+}
+
+bool Workspace::BuildReleasePackage(const std::vector<const Resource*>& resources, const ContentPackingOptions& options)
 {
     const QString& outdir = JoinPath(options.directory, options.package_name);
     if (!MakePath(outdir))
@@ -2162,14 +3091,25 @@ bool Workspace::PackContent(const std::vector<const Resource*>& resources, const
     std::vector<std::unique_ptr<Resource>> mutable_copies;
     for (const auto* resource : resources)
     {
+        ASSERT(!resource->IsPrimitive());
         mutable_copies.push_back(resource->Copy());
     }
+
+    // Partition the resources such that the data objects come in first.
+    // This is done because some resources such as tilemaps refer to the
+    // data resources by URI and in order for the URI remapping to work
+    // the packer must have packed the data object before packing the
+    // tilemap object.
+    std::partition(mutable_copies.begin(), mutable_copies.end(),
+        [](const auto& resource) {
+            return resource->IsDataFile();
+        });
 
     DEBUG("Max texture size. [width=%1, height=%2]", options.max_texture_width, options.max_texture_height);
     DEBUG("Pack size. [width=%1, height=%2]", options.texture_pack_width, options.texture_pack_height);
     DEBUG("Pack flags. [resize=%1, combine=%2]", options.resize_textures, options.combine_textures);
 
-    ResourcePacker packer(outdir,
+    GfxTexturePacker texture_packer(outdir,
         options.max_texture_width,
         options.max_texture_height,
         options.texture_pack_width,
@@ -2188,21 +3128,11 @@ bool Workspace::PackContent(const std::vector<const Resource*>& resources, const
             // todo: maybe move to Resource interface ?
             const gfx::MaterialClass* material = nullptr;
             resource->GetContent(&material);
-            material->BeginPacking(&packer);
-        }
-        else if (resource->IsParticleEngine())
-        {
-            const gfx::KinematicsParticleEngineClass* engine = nullptr;
-            resource->GetContent(&engine);
-            engine->Pack(&packer);
-        }
-        else if (resource->IsCustomShape())
-        {
-            const gfx::PolygonClass* polygon = nullptr;
-            resource->GetContent(&polygon);
-            polygon->Pack(&packer);
+            material->BeginPacking(&texture_packer);
         }
     }
+
+    MyResourcePacker file_packer(outdir, mWorkspaceDir);
 
     unsigned errors = 0;
 
@@ -2211,154 +3141,12 @@ bool Workspace::PackContent(const std::vector<const Resource*>& resources, const
     // resolution and mapping functionality.
     for (int i=0; i<mutable_copies.size(); ++i)
     {
-        const auto& resource = mutable_copies[i];
-        if (resource->IsScript())
-        {
-            const Script* script = nullptr;
-            resource->GetContent(&script);
-            packer.CopyFile(script->GetFileURI(), "lua/");
-        }
-        else if (resource->IsDataFile())
-        {
-            const DataFile* datafile = nullptr;
-            resource->GetContent(&datafile);
-            packer.CopyFile(datafile->GetFileURI(), "data/");
-        }
-        else if (resource->IsAudioGraph())
-        {
-            // todo: this audio packing sucks a little bit since it needs
-            // to know about the details of elements now. maybe this
-            // should be refactored into the audio/ subsystem.. ?
-            audio::GraphClass* audio = nullptr;
-            resource->GetContent(&audio);
-            for (size_t i=0; i<audio->GetNumElements(); ++i)
-            {
-                auto& elem = audio->GetElement(i);
-                for (auto& p : elem.args)
-                {
-                    const auto& name = p.first;
-                    if (name != "file") continue;
-
-                    auto* file_uri = std::get_if<std::string>(&p.second);
-                    ASSERT(file_uri && "Missing audio element 'file' parameter.");
-                    if (file_uri->empty())
-                    {
-                        WARN("Audio element doesn't have input file set. [graph='%1', elem='%2']", audio->GetName(), name);
-                        continue;
-                    }
-                    *file_uri = packer.CopyFile(*file_uri, "audio");
-                }
-            }
-        }
-        else if (resource->IsUI())
-        {
-            uik::Window* window = nullptr;
-            resource->GetContent(&window);
-            // package the style resources. currently this is only the font files.
-            auto style_data = LoadGameData(window->GetStyleName());
-            if (!style_data)
-            {
-                ERROR("Failed to open UI style file. [UI='%1', style='%2']", window->GetName(), window->GetStyleName());
-                errors++;
-                continue;
-            }
-            engine::UIStyle style;
-            if (!style.LoadStyle(*style_data))
-            {
-                ERROR("Failed to load UI style. [UI='%1', style='%2']", window->GetName(), window->GetStyleName());
-                errors++;
-                continue;
-            }
-            std::vector<engine::UIStyle::PropertyKeyValue> props;
-            style.GatherProperties("-font", &props);
-            for (auto& p : props)
-            {
-                std::string src_font_uri;
-                std::string dst_font_uri;
-                p.prop.GetValue(&src_font_uri);
-                dst_font_uri = packer.CopyFile(src_font_uri, "fonts");
-                p.prop.SetValue(dst_font_uri);
-                style.SetProperty(p.key, p.prop);
-            }
-            window->SetStyleName(packer.CopyFile(window->GetStyleName(), "ui"));
-            // for each widget, parse the style string and see if there are more font-name props.
-            window->ForEachWidget([&style, &packer](uik::Widget* widget) {
-                auto style_string = widget->GetStyleString();
-                if (style_string.empty())
-                    return;
-                DEBUG("Original widget style string. [widget='%1', style='%2']", widget->GetId(), style_string);
-                style.ClearProperties();
-                style.ClearMaterials();
-                style.ParseStyleString(widget->GetId(), style_string);
-                std::vector<engine::UIStyle::PropertyKeyValue> props;
-                style.GatherProperties("-font", &props);
-                for (auto& p : props)
-                {
-                    std::string src_font_uri;
-                    std::string dst_font_uri;
-                    p.prop.GetValue(&src_font_uri);
-                    dst_font_uri = packer.CopyFile(src_font_uri, "fonts");
-                    p.prop.SetValue(dst_font_uri);
-                    style.SetProperty(p.key, p.prop);
-                }
-                style_string = style.MakeStyleString(widget->GetId());
-                // this is a bit of a hack but we know that the style string
-                // contains the widget id for each property. removing the
-                // widget id from the style properties:
-                // a) saves some space
-                // b) makes the style string copyable from one widget to another as-s
-                boost::erase_all(style_string, widget->GetId() + "/");
-                DEBUG("Updated widget style string. [widget='%1', style='%2']", widget->GetId(), style_string);
-                widget->SetStyleString(std::move(style_string));
-            });
-            auto window_style_string = window->GetStyleString();
-            if (!window_style_string.empty())
-            {
-                DEBUG("Original window style string. [window='%1', style='%2']", window->GetName(), window_style_string);
-                style.ClearProperties();
-                style.ClearMaterials();
-                style.ParseStyleString("window", window_style_string);
-                std::vector<engine::UIStyle::PropertyKeyValue> props;
-                style.GatherProperties("-font", &props);
-                for (auto& p : props)
-                {
-                    std::string src_font_uri;
-                    std::string dst_font_uri;
-                    p.prop.GetValue(&src_font_uri);
-                    dst_font_uri = packer.CopyFile(src_font_uri, "fonts");
-                    p.prop.SetValue(dst_font_uri);
-                    style.SetProperty(p.key, p.prop);
-                }
-                window_style_string = style.MakeStyleString("window");
-                // this is a bit of a hack but we know that the style string
-                // contains the prefix "window" for each property. removing the
-                // prefix from the style properties:
-                // a) saves some space
-                // b) makes the style string copyable from one widget to another as-s
-                boost::erase_all(window_style_string, "window/");
-                // set the actual style string.
-                DEBUG("Updated window style string. [window='%1', style='%2']", window->GetName(), window_style_string);
-                window->SetStyleString(std::move(window_style_string));
-            }
-        }
-        else if (resource->IsEntity())
-        {
-            game::EntityClass* entity = nullptr;
-            resource->GetContent(&entity);
-            for (size_t i=0; i<entity->GetNumNodes(); ++i)
-            {
-                auto& node = entity->GetNode(i);
-                if (!node.HasTextItem())
-                    continue;
-                auto* text = node.GetTextItem();
-                text->SetFontName(packer.CopyFile(text->GetFontName(), "fonts/"));
-            }
-        }
+        mutable_copies[i]->Pack(file_packer);
     }
 
-    packer.PackTextures([this](const std::string& action, int step, int max) {
+    texture_packer.PackTextures([this](const std::string& action, int step, int max) {
         emit ResourcePackingUpdate(FromLatin(action), step, max);
-    });
+    }, file_packer);
 
     for (int i=0; i<mutable_copies.size(); ++i)
     {
@@ -2369,7 +3157,7 @@ bool Workspace::PackContent(const std::vector<const Resource*>& resources, const
             // todo: maybe move to resource interface ?
             gfx::MaterialClass* material = nullptr;
             resource->GetContent(&material);
-            material->FinishPacking(&packer);
+            material->FinishPacking(&texture_packer);
         }
     }
 
@@ -2378,7 +3166,7 @@ bool Workspace::PackContent(const std::vector<const Resource*>& resources, const
         // todo: should change the font URI.
         // but right now this still also works since there's a hack for this
         // in the loader in engine/ (Also same app:// thing applies to the UI style files)
-        packer.CopyFile(app::ToUtf8(mSettings.debug_font), "fonts/");
+        file_packer.CopyFile(app::ToUtf8(mSettings.debug_font), "fonts/");
     }
 
     // write content file ?
@@ -2617,8 +3405,7 @@ bool Workspace::PackContent(const std::vector<const Resource*>& resources, const
         }
     }
 
-    const auto total_errors = errors + packer.GetNumErrors();
-    if (total_errors)
+    if (const auto total_errors = errors + texture_packer.GetNumErrors() + file_packer.GetNumErrors())
     {
         WARN("Resource packing completed with errors (%1).", total_errors);
         WARN("Please see the log file for details.");

@@ -414,7 +414,7 @@ EntityWidget::EntityWidget(app::Workspace* workspace) : mUndoStack(3)
 
     mState.entity = std::make_shared<game::EntityClass>();
     mState.entity->SetName("My Entity");
-    mOriginalHash = mState.entity->GetHash();
+    mOriginalHash = ComputeHash();
 
     mRenderTree.reset(new TreeModel(*mState.entity));
     mScriptVarModel.reset(new ScriptVarModel(mState));
@@ -488,6 +488,7 @@ EntityWidget::EntityWidget(app::Workspace* workspace) : mUndoStack(3)
     DisplayEntityProperties();
     DisplayCurrentNodeProperties();
     DisplayCurrentCameraLocation();
+    setWindowTitle("My Entity");
 }
 
 EntityWidget::EntityWidget(app::Workspace* workspace, const app::Resource& resource)
@@ -502,6 +503,7 @@ EntityWidget::EntityWidget(app::Workspace* workspace, const app::Resource& resou
     GetUserProperty(resource, "show_origin", mUI.chkShowOrigin);
     GetUserProperty(resource, "show_grid", mUI.chkShowGrid);
     GetUserProperty(resource, "show_viewport", mUI.chkShowViewport);
+    GetUserProperty(resource, "show_comments", mUI.chkShowComments);
     GetUserProperty(resource, "widget", mUI.widget);
     GetUserProperty(resource, "camera_scale_x", mUI.scaleX);
     GetUserProperty(resource, "camera_scale_y", mUI.scaleY);
@@ -510,7 +512,6 @@ EntityWidget::EntityWidget(app::Workspace* workspace, const app::Resource& resou
                        GetUserProperty(resource, "camera_offset_y", &mState.camera_offset_y);
 
     mState.entity = std::make_shared<game::EntityClass>(*content);
-    mOriginalHash = mState.entity->GetHash();
 
     // load per track resource properties.
     for (size_t i=0; i< mState.entity->GetNumAnimations(); ++i)
@@ -521,6 +522,17 @@ EntityWidget::EntityWidget(app::Workspace* workspace, const app::Resource& resou
         GetProperty(resource, "track_" + app::FromUtf8(Id), &properties);
         mTrackProperties[Id] = properties;
     }
+    // load per node comments
+    for (size_t i=0; i<mState.entity->GetNumNodes(); ++i)
+    {
+        const auto& node = mState.entity->GetNode(i);
+        const auto& id = node.GetId();
+        QString comment;
+        GetProperty(resource, "comment_" + app::FromUtf8(id), &comment);
+        mComments[id] = comment;
+    }
+
+    mOriginalHash = ComputeHash();
 
     UpdateDeletedResourceReferences();
     RebuildCombosInternal();
@@ -556,6 +568,24 @@ void EntityWidget::Initialize(const UISettings& settings)
     SetValue(mUI.chkShowGrid,     settings.show_grid);
     SetValue(mUI.cmbGrid,         settings.grid);
     SetValue(mUI.zoom,            settings.zoom);
+}
+
+void EntityWidget::SetViewerMode()
+{
+    SetVisible(mUI.baseProperties, false);
+    SetVisible(mUI.tabWidget,      false);
+    SetVisible(mUI.transform,      false);
+    SetVisible(mUI.lblHelp,        false);
+    SetVisible(mUI.renderTree,     false);
+    SetVisible(mUI.nodeProperties, false);
+    SetVisible(mUI.nodeTransform,  false);
+    SetVisible(mUI.nodeItems,      false);
+    SetValue(mUI.chkShowGrid,      false);
+    SetValue(mUI.chkShowOrigin,    false);
+    SetValue(mUI.chkShowViewport,  false);
+
+    QTimer::singleShot(10, this, &EntityWidget::on_btnResetTransform_clicked);
+    on_actionPlay_triggered();
 }
 
 void EntityWidget::AddActions(QToolBar& bar)
@@ -619,12 +649,19 @@ bool EntityWidget::SaveState(Settings& settings) const
         settings.SetValue("Entity", app::FromUtf8(p.first), p.second);
     }
 
+    for (const auto& [node, comment] : mComments)
+    {
+        if (mState.entity->FindNodeById(node))
+            settings.SetValue("Entity", "comment_" + app::FromUtf8(node), comment);
+    }
+
     settings.SaveWidget("Entity", mUI.scaleX);
     settings.SaveWidget("Entity", mUI.scaleY);
     settings.SaveWidget("Entity", mUI.rotation);
     settings.SaveWidget("Entity", mUI.chkShowOrigin);
     settings.SaveWidget("Entity", mUI.chkShowGrid);
     settings.SaveWidget("Entity", mUI.chkShowViewport);
+    settings.SaveWidget("Entity", mUI.chkShowComments);
     settings.SaveWidget("Entity", mUI.chkSnap);
     settings.SaveWidget("Entity", mUI.cmbGrid);
     settings.SaveWidget("Entity", mUI.zoom);
@@ -646,6 +683,7 @@ bool EntityWidget::LoadState(const Settings& settings)
     settings.LoadWidget("Entity", mUI.chkShowOrigin);
     settings.LoadWidget("Entity", mUI.chkShowGrid);
     settings.LoadWidget("Entity", mUI.chkShowViewport);
+    settings.LoadWidget("Entity", mUI.chkShowComments);
     settings.LoadWidget("Entity", mUI.chkSnap);
     settings.LoadWidget("Entity", mUI.cmbGrid);
     settings.LoadWidget("Entity", mUI.zoom);
@@ -667,6 +705,15 @@ bool EntityWidget::LoadState(const Settings& settings)
         QVariantMap properties;
         settings.GetValue("Entity", app::FromUtf8(track.GetId()), &properties);
         mTrackProperties[track.GetId()] = properties;
+    }
+
+    for (size_t i=0; i<mState.entity->GetNumNodes(); ++i)
+    {
+        const auto& node = mState.entity->GetNode(i);
+        const auto& id = node.GetId();
+        QString comment;
+        settings.GetValue("Entity", "comment_" + app::FromUtf8(id), &comment);
+        mComments[id] = comment;
     }
 
     UpdateDeletedResourceReferences();
@@ -731,10 +778,14 @@ void EntityWidget::Cut(Clipboard& clipboard)
     {
         data::JsonObject json;
         const auto& tree = mState.entity->GetRenderTree();
-        game::RenderTreeIntoJson(tree, [](data::Writer& data, const auto* node) {
+        game::RenderTreeIntoJson(tree, [this, &clipboard](data::Writer& data, const auto* node) {
             node->IntoJson(data);
+            if (const auto* comment = base::SafeFind(mComments, node->GetId()))
+                clipboard.SetProperty("comment_" + node->GetId(), *comment);
+            mComments.erase(node->GetId());
         }, json, node);
-        clipboard.SetType("application/json/entity");
+
+        clipboard.SetType("application/json/entity/node");
         clipboard.SetText(json.ToString());
 
         NOTE("Copied JSON to application clipboard.");
@@ -752,9 +803,12 @@ void EntityWidget::Copy(Clipboard& clipboard) const
     {
         data::JsonObject json;
         const auto& tree = mState.entity->GetRenderTree();
-        game::RenderTreeIntoJson(tree, [](data::Writer& data, const auto* node) {
+        game::RenderTreeIntoJson(tree, [this, &clipboard](data::Writer& data, const auto* node) {
             node->IntoJson(data);
+            if (const auto* comment = base::SafeFind(mComments, node->GetId()))
+                clipboard.SetProperty("comment_" + node->GetId(), *comment);
         }, json, node);
+
         clipboard.SetType("application/json/entity");
         clipboard.SetText(json.ToString());
 
@@ -783,13 +837,21 @@ void EntityWidget::Paste(const Clipboard& clipboard)
 
     // use a temporary vector in case there's a problem
     std::vector<std::unique_ptr<game::EntityNodeClass>> nodes;
+    std::unordered_map<std::string, QString> comments;
+
     bool error = false;
     game::EntityClass::RenderTree tree;
-    game::RenderTreeFromJson(tree, [&nodes, &error](const data::Reader& data) {
+    game::RenderTreeFromJson(tree, [&nodes, &error, &comments, &clipboard](const data::Reader& data) {
         auto ret = game::EntityNodeClass::FromJson(data);
-        if (ret.has_value()) {
+        if (ret.has_value())
+        {
             auto node = std::make_unique<game::EntityNodeClass>(ret->Clone());
             node->SetName(base::FormatString("Copy of %1", ret->GetName()));
+
+            QString comment;
+            if (clipboard.GetProperty("comment_" + ret->GetId(), &comment))
+                comments[node->GetId()] = comment;
+
             nodes.push_back(std::move(node));
             return nodes.back().get();
         }
@@ -838,6 +900,8 @@ void EntityWidget::Paste(const Clipboard& clipboard)
         auto* parent = tree.GetParent(node);
         mState.entity->LinkChild(parent, node);
     });
+
+    mComments.merge(comments);
 
     mUI.tree->Rebuild();
     mUI.tree->SelectItemById(app::FromUtf8(paste_root->GetId()));
@@ -912,7 +976,7 @@ void EntityWidget::Render()
 
 bool EntityWidget::HasUnsavedChanges() const
 {
-    if (mOriginalHash == mState.entity->GetHash())
+    if (mOriginalHash == ComputeHash())
         return false;
     return true;
 }
@@ -1045,19 +1109,25 @@ void EntityWidget::on_actionSave_triggered()
     SetUserProperty(resource, "grid", mUI.cmbGrid);
     SetUserProperty(resource, "snap", mUI.chkSnap);
     SetUserProperty(resource, "show_origin", mUI.chkShowOrigin);
+    SetUserProperty(resource, "show_comments", mUI.chkShowComments);
     SetUserProperty(resource, "show_grid", mUI.chkShowGrid);
     SetUserProperty(resource, "widget", mUI.widget);
     SetUserProperty(resource, "show_viewport", mUI.chkShowViewport);
 
     // save the track properties.
-    for (auto p : mTrackProperties)
+    for (const auto& p : mTrackProperties)
     {
         SetProperty(resource, "track_" + app::FromUtf8(p.first), p.second);
     }
+    // save the node comments
+    for (const auto& [node, comment] : mComments)
+    {
+        if (mState.entity->FindNodeById(node))
+            SetProperty(resource, "comment_"  + app::FromUtf8(node), comment);
+    }
 
     mState.workspace->SaveResource(resource);
-    mOriginalHash = mState.entity->GetHash();
-    setWindowTitle(GetValue(mUI.entityName));
+    mOriginalHash = ComputeHash();
 }
 void EntityWidget::on_actionNewRect_triggered()
 {
@@ -1129,6 +1199,11 @@ void EntityWidget::on_actionNodeDelete_triggered()
 {
     if (auto* node = GetCurrentNode())
     {
+        const auto& tree = mState.entity->GetRenderTree();
+        tree.ForEachChild([this](const auto* node) {
+            mComments.erase(node->GetId());
+        }, node);
+
         mState.entity->DeleteNode(node);
 
         mUI.tree->Rebuild();
@@ -1140,12 +1215,12 @@ void EntityWidget::on_actionNodeVarRef_triggered()
 {
     if (const auto* node = GetCurrentNode())
     {
-        std::vector<ListItem> entities;
-        std::vector<ListItem> nodes;
+        std::vector<ResourceListItem> entities;
+        std::vector<ResourceListItem> nodes;
         for (size_t i = 0; i < mState.entity->GetNumNodes(); ++i)
         {
             const auto& node = mState.entity->GetNode(i);
-            ListItem item;
+            ResourceListItem item;
             item.name = app::FromUtf8(node.GetName());
             item.id = app::FromUtf8(node.GetId());
             nodes.push_back(std::move(item));
@@ -1197,7 +1272,7 @@ void EntityWidget::on_actionNodeDuplicate_triggered()
     if (const auto* node = GetCurrentNode())
     {
         auto* dupe = mState.entity->DuplicateNode(node);
-        // update the the translation for the parent of the new hierarchy
+        // update the translation for the parent of the new hierarchy
         // so that it's possible to tell it apart from the source of the copy.
         dupe->SetTranslation(node->GetTranslation() * 1.2f);
 
@@ -1206,9 +1281,49 @@ void EntityWidget::on_actionNodeDuplicate_triggered()
     }
 }
 
+void EntityWidget::on_actionNodeComment_triggered()
+{
+    if (const auto* node = GetCurrentNode())
+    {
+        QString comment;
+        if (const auto* ptr = base::SafeFind(mComments, node->GetId()))
+            comment = *ptr;
+        bool accepted = false;
+        comment = QInputDialog::getText(this,
+            tr("Edit Comment"),
+            tr("Comment: "), QLineEdit::Normal, comment, &accepted);
+        if (!accepted)
+            return;
+        mComments[node->GetId()] = comment;
+        SetValue(mUI.nodeComment, comment);
+    }
+}
+
+void EntityWidget::on_actionNodeRename_triggered()
+{
+    if (auto* node = GetCurrentNode())
+    {
+        QString name = app::FromUtf8(node->GetName());
+        bool accepted = false;
+        name = QInputDialog::getText(this,
+            tr("Rename Node"),
+            tr("Name: "), QLineEdit::Normal, name, &accepted);
+        if (!accepted)
+            return;
+        node->SetName(app::ToUtf8(name));
+        SetValue(mUI.nodeName, name);
+        mUI.tree->Rebuild();
+    }
+}
+
 void EntityWidget::on_entityName_textChanged(const QString& text)
 {
     mState.entity->SetName(GetValue(mUI.entityName));
+}
+
+void EntityWidget::on_entityTag_textChanged(const QString& text)
+{
+    mState.entity->SetTag(GetValue(mUI.entityTag));
 }
 
 void EntityWidget::on_entityLifetime_valueChanged(double value)
@@ -1469,12 +1584,12 @@ void EntityWidget::on_btnDeleteTrack_clicked()
 
 void EntityWidget::on_btnNewScriptVar_clicked()
 {
-    std::vector<ListItem> entities;
-    std::vector<ListItem> nodes;
+    std::vector<ResourceListItem> entities;
+    std::vector<ResourceListItem> nodes;
     for (size_t i=0; i<mState.entity->GetNumNodes(); ++i)
     {
         const auto& node = mState.entity->GetNode(i);
-        ListItem item;
+        ResourceListItem item;
         item.name = app::FromUtf8(node.GetName());
         item.id   = app::FromUtf8(node.GetId());
         nodes.push_back(std::move(item));
@@ -1494,12 +1609,12 @@ void EntityWidget::on_btnEditScriptVar_clicked()
     if (items.isEmpty())
         return;
 
-    std::vector<ListItem> entities;
-    std::vector<ListItem> nodes;
+    std::vector<ResourceListItem> entities;
+    std::vector<ResourceListItem> nodes;
     for (size_t i=0; i<mState.entity->GetNumNodes(); ++i)
     {
         const auto& node = mState.entity->GetNode(i);
-        ListItem item;
+        ResourceListItem item;
         item.name = app::FromUtf8(node.GetName());
         item.id   = app::FromUtf8(node.GetId());
         nodes.push_back(std::move(item));
@@ -1678,6 +1793,15 @@ void EntityWidget::on_nodeName_textChanged(const QString& text)
     item->SetText(text);
     mUI.tree->Update();
     RebuildCombosInternal();
+}
+void EntityWidget::on_nodeComment_textChanged(const QString& text)
+{
+    if (const auto* node = GetCurrentNode())
+    {
+        if (text.isEmpty())
+            mComments.erase(node->GetId());
+        else mComments[node->GetId()] = text;
+    }
 }
 
 void EntityWidget::on_nodeSizeX_valueChanged(double value)
@@ -2179,14 +2303,17 @@ void EntityWidget::on_tree_customContextMenuRequested(QPoint)
     mUI.actionNodeDelete->setEnabled(node != nullptr);
     mUI.actionNodeDuplicate->setEnabled(node != nullptr);
     mUI.actionNodeVarRef->setEnabled(node != nullptr);
+    mUI.actionNodeComment->setEnabled(node != nullptr);
 
     QMenu menu(this);
     menu.addAction(mUI.actionNodeMoveUpLayer);
     menu.addAction(mUI.actionNodeMoveDownLayer);
     menu.addSeparator();
     menu.addAction(mUI.actionNodeDuplicate);
+    menu.addAction(mUI.actionNodeRename);
     menu.addSeparator();
     menu.addAction(mUI.actionNodeVarRef);
+    menu.addAction(mUI.actionNodeComment);
     menu.addSeparator();
     menu.addAction(mUI.actionNodeDelete);
     menu.exec(QCursor::pos());
@@ -2339,6 +2466,22 @@ void EntityWidget::PaintScene(gfx::Painter& painter, double /*secs*/)
             DrawLine(entity, src_point, dst_point, painter);
         }
     }
+    // Draw comments if any
+    if (GetValue(mUI.chkShowComments))
+    {
+        for (const auto&[id, comment]: mComments)
+        {
+            if (comment.isEmpty())
+                continue;
+            if (const auto* node = mState.entity->FindNodeById(id))
+            {
+                const auto& size = node->GetSize();
+                const auto& pos = mState.entity->MapCoordsFromNodeBox(size, node);
+                ShowMessage(app::ToUtf8(comment), gfx::FPoint(pos.x + 10, pos.y + 10), painter);
+            }
+        }
+    }
+
     painter.ResetViewMatrix();
 
     if (mCurrentTool)
@@ -2453,7 +2596,7 @@ void EntityWidget::MousePress(QMouseEvent* mickey)
             const bool top_left_hitbox_hit = hitpos.x >= 0 && hitpos.x <= box_size.x &&
                                              hitpos.y >= 0 && hitpos.y <= box_size.y;
             if (bottom_right_hitbox_hit)
-                mCurrentTool.reset(new ResizeRenderTreeNodeTool(*mState.entity, hitnode));
+                mCurrentTool.reset(new ResizeRenderTreeNodeTool(*mState.entity, hitnode, snap, grid_size));
             else if (top_left_hitbox_hit)
                 mCurrentTool.reset(new RotateRenderTreeNodeTool(*mState.entity, hitnode));
             else mCurrentTool.reset(new MoveRenderTreeNodeTool(*mState.entity, hitnode, snap, grid_size));
@@ -2568,11 +2711,11 @@ bool EntityWidget::KeyPress(QKeyEvent* key)
 
 void EntityWidget::DisplayEntityProperties()
 {
-    std::vector<ListItem> tracks;
+    std::vector<ResourceListItem> tracks;
     for (size_t i=0; i< mState.entity->GetNumAnimations(); ++i)
     {
         const auto& track = mState.entity->GetAnimation(i);
-        ListItem item;
+        ResourceListItem item;
         item.name = app::FromUtf8(track.GetName());
         item.id   = app::FromUtf8(track.GetId());
         item.icon = QIcon("icons:animation_track.png");
@@ -2592,6 +2735,7 @@ void EntityWidget::DisplayEntityProperties()
     SetEnabled(mUI.btnEditScript, mState.entity->HasScriptFile());
 
     SetValue(mUI.entityName, mState.entity->GetName());
+    SetValue(mUI.entityTag, mState.entity->GetTag());
     SetValue(mUI.entityID, mState.entity->GetId());
     SetValue(mUI.idleTrack, ListItemId(mState.entity->GetIdleTrackId()));
     SetValue(mUI.scriptFile, ListItemId(mState.entity->GetScriptFileId()));
@@ -2609,14 +2753,13 @@ void EntityWidget::DisplayEntityProperties()
         SetEnabled(mUI.btnDeleteTrack, true);
         SetEnabled(mUI.btnEditTrack, true);
     }
-
-    setWindowTitle(GetValue(mUI.entityName));
 }
 
 void EntityWidget::DisplayCurrentNodeProperties()
 {
     SetValue(mUI.nodeID, QString(""));
     SetValue(mUI.nodeName, QString(""));
+    SetValue(mUI.nodeComment, QString(""));
     SetValue(mUI.nodeTranslateX, 0.0f);
     SetValue(mUI.nodeTranslateY, 0.0f);
     SetValue(mUI.nodeSizeX, 0.0f);
@@ -2691,6 +2834,8 @@ void EntityWidget::DisplayCurrentNodeProperties()
         SetValue(mUI.nodeScaleX, scale.x);
         SetValue(mUI.nodeScaleY, scale.y);
         SetValue(mUI.nodeRotation, qRadiansToDegrees(node->GetRotation()));
+        if (const auto* ptr = base::SafeFind(mComments, node->GetId()))
+            SetValue(mUI.nodeComment, *ptr);
         if (const auto* item = node->GetDrawable())
         {
             SetValue(mUI.drawableItem, true);
@@ -2971,15 +3116,15 @@ void EntityWidget::RebuildCombos()
     SetList(mUI.dsMaterial, mState.workspace->ListAllMaterials());
     SetList(mUI.dsDrawable, mState.workspace->ListAllDrawables());
 
-    std::vector<ListItem> polygons;
-    std::vector<ListItem> scripts;
+    std::vector<ResourceListItem> polygons;
+    std::vector<ResourceListItem> scripts;
     // for the rigid body we need to list the polygonal (custom) shape
     // objects. (note that it's actually possible that these would be concave
     // but this case isn't currently supported)
     for (size_t i=0; i<mState.workspace->GetNumUserDefinedResources(); ++i)
     {
         const auto& res = mState.workspace->GetUserDefinedResource(i);
-        ListItem pair;
+        ResourceListItem pair;
         pair.name = res.GetName();
         pair.id   = res.GetId();
         if (res.GetType() == app::Resource::Type::Shape) {
@@ -2995,14 +3140,14 @@ void EntityWidget::RebuildCombos()
 
 void EntityWidget::RebuildCombosInternal()
 {
-    std::vector<ListItem> bodies;
+    std::vector<ResourceListItem> bodies;
 
     for (size_t i=0; i<mState.entity->GetNumNodes(); ++i)
     {
         auto& node = mState.entity->GetNode(i);
         if (auto* body = node.GetRigidBody())
         {
-            ListItem pair;
+            ResourceListItem pair;
             pair.name = app::FromUtf8(node.GetName());
             pair.id   = app::FromUtf8(node.GetId());
             bodies.push_back(pair);
@@ -3088,6 +3233,28 @@ const game::EntityNodeClass* EntityWidget::GetCurrentNode() const
     else if (!item->GetUserData())
         return nullptr;
     return static_cast<game::EntityNodeClass*>(item->GetUserData());
+}
+
+size_t EntityWidget::ComputeHash() const
+{
+    size_t hash = 0;
+    hash = base::hash_combine(hash, mState.entity->GetHash());
+    // include the track properties.
+    for (const auto& [key, props] : mTrackProperties)
+    {
+        hash = base::hash_combine(hash, app::FromUtf8(key));
+        for (const auto& value : props)
+        {
+            hash = app::VariantHash(value);
+        }
+    }
+    // include the node specific comments
+    for (const auto& [node, comment] : mComments)
+    {
+        hash = base::hash_combine(hash, node);
+        hash = base::hash_combine(hash, app::ToUtf8(comment));
+    }
+    return hash;
 }
 
 } // bui

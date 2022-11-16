@@ -26,7 +26,6 @@
 #  include <QVariant>
 #  include <QVariantMap>
 #  include <neargye/magic_enum.hpp>
-#  include <boost/logic/tribool.hpp>
 #  include <glm/vec2.hpp>
 #include "warnpop.h"
 
@@ -41,7 +40,6 @@
 #include <tuple>
 
 #include "base/assert.h"
-
 #include "base/snafu.h"
 
 // general dumping ground for utility type of functionality
@@ -59,14 +57,6 @@ struct Resolution {
 
 std::vector<Resolution> ListResolutions();
 
- // move this somewhere else.
-struct ListItem {
-    QString name;
-    QString id;
-    QIcon icon;
-    boost::tribool selected = boost::indeterminate;
-};
-
 // Compute a file hash based on the contents of the file.
 // Simply returns 0 if the file could not be read.
 std::uint64_t GetFileHash(const QString& file);
@@ -74,6 +64,8 @@ std::uint64_t GetFileHash(const QString& file);
 // Concatenate two strings as file system path.
 // Returns the path formatted with native separators.
 QString JoinPath(const QString& lhs, const QString& rhs);
+
+QString JoinPath(std::initializer_list<QString> parts);
 
 // Clean the path string. Returns with native separators.
 QString CleanPath(const QString& path);
@@ -115,21 +107,21 @@ std::ofstream OpenBinaryOStream(const QString& file);
 std::ifstream OpenBinaryIStream(const QString& file);
 
 // Simple helper function to quickly dump binary data to a file.
-// Returns true if succesful, otherwise false.
-bool WriteAsBinary(const QString& file, const void* data, std::size_t bytes);
+// Returns true if successful, otherwise false.
+bool WriteBinaryFile(const QString& file, const void* data, std::size_t bytes);
 
 // Simple helper function to write the contents of vector<T>
 // in binary to a file.
 template<typename T>
-bool WriteAsBinary(const QString& file, const std::vector<T>& data)
+bool WriteBinaryFile(const QString& file, const std::vector<T>& data)
 {
-    return WriteAsBinary(file, (const void*)data.data(),
-        sizeof(T) * data.size());
+    return WriteBinaryFile(file, (const void*) data.data(),
+                           sizeof(T) * data.size());
 }
 
 // Read the contents of a file into a vector of some generic type T
 template<typename T>
-bool ReadAsBinary(const QString& file, std::vector<T>& data)
+bool ReadBinaryFile(const QString& file, std::vector<T>& data)
 {
     std::ifstream in = OpenBinaryIStream(file);
     if (!in.is_open())
@@ -172,6 +164,7 @@ QString GetAppInstFilePath(const QString& name);
 
 bool ValidateQVariantJsonSupport(const QVariant& variant);
 bool ValidateQVariantMapJsonSupport(const QVariantMap& map);
+size_t VariantHash(const QVariant& variant);
 
 template<typename Enum>
 Enum EnumFromString(const QString& str, Enum backup, bool* success = nullptr)
@@ -210,9 +203,13 @@ inline void JsonWrite(QJsonObject& object, const char* name, unsigned value)
 {
     object[name] = static_cast<int>(value);
 }
-inline void JsonWrite(QJsonObject& object, const char* name, QString value)
+inline void JsonWrite(QJsonObject& object, const char* name, const QString& value)
 {
     object[name] = value;
+}
+inline void JsonWrite(QJsonObject& object, const char* name, const std::string& value)
+{
+    object[name] = FromUtf8(value);
 }
 inline void JsonWrite(QJsonObject& object, const char* name, bool value)
 {
@@ -286,6 +283,15 @@ inline bool JsonReadSafe(const QJsonObject& object, const char* name, QString* o
     *out = object[name].toString();
     return true;
 }
+inline bool JsonReadSafe(const QJsonObject& object, const char* name, std::string* out)
+{
+    if (!object.contains(name) || !object[name].isString())
+        return false;
+    QString str = object[name].toString();
+    *out = ToUtf8(str);
+    return true;
+}
+
 inline bool JsonReadSafe(const QJsonObject& object, const char* name, bool* out)
 {
     if (!object.contains(name) || !object[name].isBool())

@@ -49,6 +49,7 @@
 #include "base/utility.h"
 #include "base/json.h"
 #include "base/trace.h"
+#include "data/json.h"
 #include "engine/main/interface.h"
 #include "engine/classlib.h"
 #include "wdk/opengl/config.h"
@@ -58,6 +59,8 @@
 #include "wdk/events.h"
 #include "wdk/system.h"
 #include "interface.h"
+
+#include "git.h"
 
 // this application will read the given JSON file and
 // create window and open gl rendering context based on
@@ -462,9 +465,10 @@ int main(int argc, char* argv[])
 
         DEBUG("It's alive!");
         INFO("Ensisoft Gamestudio 2D");
-        INFO("Copyright (c) 2010-2020 Sami Vaisanen");
+        INFO("Copyright (c) 2010-2022 Sami Vaisanen");
         INFO("http://www.ensisoft.com");
         INFO("http://github.com/ensisoft/gamestudio");
+        INFO("Built on branch '%1' with commit %2", git_Branch(), git_CommitSHA1());
 
         std::unique_ptr<base::TraceWriter> trace_writer;
         std::unique_ptr<base::TraceLog> trace_logger;
@@ -511,12 +515,23 @@ int main(int argc, char* argv[])
             DEBUG("Content package: '%1'", content);
             DEBUG("Content path: '%1']", content_path);
             DEBUG("Content file: '%1']", content_file);
-            if (!loaders.ContentLoader->LoadFromFile(content_file))
+
+            data::JsonFile content_json_file;
+            const auto [success, error_string] = content_json_file.Load(content_file);
+            if (!success)
+            {
+                ERROR("Failed to load game content from file. [file='%1', error='%2']", content_file, error_string);
                 return EXIT_FAILURE;
+            }
+            const auto& content_json = content_json_file.GetRootObject();
+            if (!loaders.ContentLoader->LoadClasses(content_json))
+                return EXIT_FAILURE;
+
             engine::FileResourceLoader::DefaultAudioIOStrategy audio_io_strategy;
             if (base::JsonReadSafe(json["desktop"], "audio_io_strategy", &audio_io_strategy))
                 loaders.ResourceLoader->SetDefaultAudioIOStrategy(audio_io_strategy);
 
+            loaders.ResourceLoader->LoadResourceLoadingInfo(content_json);
             loaders.ResourceLoader->SetApplicationPath(application_path);
             loaders.ResourceLoader->SetContentPath(content_path);
             loaders.ResourceLoader->PreloadFiles();
@@ -532,8 +547,9 @@ int main(int argc, char* argv[])
         engine::Engine::Environment env;
         env.classlib         = loaders.ContentLoader.get();
         env.graphics_loader  = loaders.ResourceLoader.get();
-        env.game_data_loader = loaders.ResourceLoader.get();
+        env.engine_loader    = loaders.ResourceLoader.get();
         env.audio_loader     = loaders.ResourceLoader.get();
+        env.game_loader      = loaders.ResourceLoader.get();
         env.directory        = GetPath();
         env.user_home        = DiscoverUserHome();
         env.game_home        = GenerateGameHome(env.user_home, identifier);

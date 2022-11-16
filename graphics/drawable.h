@@ -46,7 +46,6 @@ namespace gfx
     class Shader;
     class Geometry;
     class Program;
-    class Packer;
 
     // DrawableClass defines a new type of drawable.
      class DrawableClass
@@ -71,6 +70,7 @@ namespace gfx
             RightTriangle,
             RoundRectangle,
             Trapezoid,
+            TileBatch
         };
          // Style of the drawable's geometry determines how the geometry
          // is to be rasterized.
@@ -111,14 +111,16 @@ namespace gfx
         virtual Type GetType() const = 0;
         // Get the class ID.
         virtual std::string GetId() const = 0;
+        // Get the human-readable class name.
+        virtual std::string GetName() const = 0;
+        // Set the human-readable class name.
+        virtual void SetName(const std::string& name) = 0;
         // Create a copy of this drawable class object but with unique id.
         virtual std::unique_ptr<DrawableClass> Clone() const = 0;
         // Create an exact copy of this drawable object.
         virtual std::unique_ptr<DrawableClass> Copy() const = 0;
         // Get the hash of the drawable class object  based on its properties.
         virtual std::size_t GetHash() const = 0;
-        // Pack the drawable resources.
-        virtual void Pack(Packer* packer) const = 0;
         // Serialize into JSON
         virtual void IntoJson(data::Writer& data) const = 0;
         // Load state from JSON object. Returns true if successful
@@ -201,6 +203,10 @@ namespace gfx
 
             virtual std::string GetId() const override
             { return mId; }
+            virtual std::string GetName() const override
+            { return mName; }
+            virtual void SetName(const std::string& name) override
+            { mName = name; }
             virtual std::unique_ptr<DrawableClass> Clone() const override
             {
                 auto ret = std::make_unique<Class>(*static_cast<const Class*>(this));
@@ -218,6 +224,7 @@ namespace gfx
             {}
         protected:
             std::string mId;
+            std::string mName;
         };
 
         // helper class template to stomp out generic class type that
@@ -236,6 +243,10 @@ namespace gfx
             { return DrawableType; }
             virtual std::string GetId() const override
             { return mId; }
+            virtual std::string GetName() const override
+            { return mName; }
+            virtual void SetName(const std::string& name) override
+            { mName = name; }
             virtual std::unique_ptr<DrawableClass> Clone() const override
             {
                 auto ret = std::make_unique<GenericDrawableClass>(*this);
@@ -246,18 +257,20 @@ namespace gfx
             { return std::make_unique<GenericDrawableClass>(*this); }
             virtual std::size_t GetHash() const override
             { return base::hash_combine(0, mId); }
-            virtual void Pack(Packer*) const override {}
             virtual void IntoJson(data::Writer& writer) const override
             {
-                writer.Write("id", mId);
+                writer.Write("id",   mId);
+                writer.Write("name", mName);
             }
             virtual bool LoadFromJson(const data::Reader& reader) override
             {
-                reader.Read("id", &mId);
+                reader.Read("id",   &mId);
+                reader.Read("name", &mName);
                 return true;
             }
         protected:
             std::string mId;
+            std::string mName;
         };
 
 
@@ -396,7 +409,6 @@ namespace gfx
         virtual Type GetType() const override
         { return Type::Sector; }
         virtual std::size_t GetHash() const override;
-        virtual void Pack(Packer* packer) const override;
         virtual void IntoJson(data::Writer& data) const override;
         virtual bool LoadFromJson(const data::Reader& data) override;
     private:
@@ -476,7 +488,6 @@ namespace gfx
         virtual Type GetType() const override
         { return Type::RoundRectangle; }
         virtual std::size_t GetHash() const override;
-        virtual void Pack(Packer* packer) const override;
         virtual void IntoJson(data::Writer& data) const override;
         virtual bool LoadFromJson(const data::Reader& data) override;
     private:
@@ -564,7 +575,6 @@ namespace gfx
         virtual Type GetType() const override
         { return Type::Grid; }
         virtual std::size_t GetHash() const override;
-        virtual void Pack(Packer* packer) const override;
         virtual void IntoJson(data::Writer& data) const override;
         virtual bool LoadFromJson(const data::Reader& data) override;
     private:
@@ -705,7 +715,6 @@ namespace gfx
 
         virtual Type GetType() const override
         { return Type::Polygon; }
-        virtual void Pack(Packer* packer) const override;
         virtual std::size_t GetHash() const override;
         virtual void IntoJson(data::Writer& data) const override;
         virtual bool LoadFromJson(const data::Reader& data) override;
@@ -780,7 +789,6 @@ namespace gfx
         virtual Type GetType() const override
         { return Type::Cursor; }
         virtual std::size_t GetHash() const override;
-        virtual void Pack(Packer* packer) const override;
         virtual void IntoJson(data::Writer& data) const override;
         virtual bool LoadFromJson(const data::Reader& data) override;
     private:
@@ -1075,7 +1083,6 @@ namespace gfx
         virtual Type GetType() const override
         { return DrawableClass::Type::KinematicsParticleEngine; }
         virtual std::size_t GetHash() const override;
-        virtual void Pack(Packer* packer) const override;
         virtual void IntoJson(data::Writer& data) const override;
         virtual bool LoadFromJson(const data::Reader& data) override;
         // Load from JSON
@@ -1157,6 +1164,42 @@ namespace gfx
         std::shared_ptr<const KinematicsParticleEngineClass> mClass;
         // this is this particle engine's state.
         KinematicsParticleEngineClass::InstanceState mState;
+    };
+
+
+    class TileBatch : public Drawable
+    {
+    public:
+        struct Tile {
+            Vec2 pos;
+        };
+        TileBatch(float tile_width, float tile_height)
+          : mTileWidth(tile_width)
+          , mTileHeight(tile_height)
+        {}
+        TileBatch() = default;
+
+        virtual void ApplyDynamicState(const Environment& env, Program& program, RasterState& raster) const override;
+        virtual Shader* GetShader(Device& device) const override;
+        virtual Geometry* Upload(const Environment& env, Device& device) const override;
+        virtual Style GetStyle() const override;
+        virtual std::string GetProgramId() const override;
+
+        void AddTile(const Tile& tile)
+        { mTiles.push_back(tile); }
+        void AddTile(Tile&& tile)
+        { mTiles.push_back(std::move(tile));}
+        void ClearTiles()
+        { mTiles.clear(); }
+
+        void SetTileWidth(float width)
+        { mTileWidth = width; }
+        void SetTileHeight(float height)
+        { mTileWidth = height; }
+    private:
+        std::vector<Tile> mTiles;
+        float mTileWidth  = 0.0f;
+        float mTileHeight = 0.0f;
     };
 
     std::unique_ptr<Drawable> CreateDrawableInstance(const std::shared_ptr<const DrawableClass>& klass);

@@ -996,6 +996,14 @@ public:
     }
     size_t GetSize() const
     { return mResult.size(); }
+
+    static ResultVector Join(const ResultVector& lhs, const ResultVector& rhs)
+    {
+        Vector vec;
+        base::AppendVector(vec, lhs.mResult);
+        base::AppendVector(vec, rhs.mResult);
+        return  ResultVector(std::move(vec));
+    }
 private:
     Vector mResult;
     typename Vector::iterator mBegin;
@@ -1046,6 +1054,12 @@ void LuaRuntime::Init()
     mLuaState->open_libraries();
     mLuaState->clear_package_loaders();
 
+    // todo: improve the package loading so that we can realize
+    // other locations for the Lua scripts as well. This might
+    // happen for instance when an exported Lua script is imported
+    // into another project under some folder under the workspace.
+    // In this case the imported Lua script file would not be in
+    // workspace/lua but something like workspace/blabla/lua/
     mLuaState->add_package_loader([this](std::string module) {
         ASSERT(mDataLoader);
         if (!base::EndsWith(module, ".lua"))
@@ -1053,7 +1067,7 @@ void LuaRuntime::Init()
 
         DEBUG("Loading Lua module. [module=%1]", module);
         const auto& file = base::JoinPath(mLuaPath, module);
-        const auto& buff = mDataLoader->LoadGameDataFromFile(file);
+        const auto& buff = mDataLoader->LoadEngineDataFile(file);
         if (!buff)
             throw std::runtime_error("can't find lua module: " + module);
         auto ret = mLuaState->load_buffer((const char*)buff->GetData(), buff->GetSize());
@@ -1291,7 +1305,7 @@ void LuaRuntime::Init()
         const auto& main_game_script = base::JoinPath(mLuaPath, mGameScript);
         DEBUG("Loading main game script. [file='%1']", main_game_script);
 
-        const auto buffer = mDataLoader->LoadGameDataFromFile(main_game_script);
+        const auto buffer = mDataLoader->LoadEngineDataFile(main_game_script);
         if (!buffer)
         {
             ERROR("Failed to load main game script data. [file='%1']", main_game_script);
@@ -1365,14 +1379,14 @@ void LuaRuntime::BeginPlay(Scene* scene)
         auto it = script_env_map.find(script);
         if (it == script_env_map.end())
         {
-            const auto& script_file = base::JoinPath(mLuaPath, script + ".lua");
-            const auto& script_buff = mDataLoader->LoadGameDataFromFile(script_file);
+            const auto& script_buff = mDataLoader->LoadEngineDataId(script);
             if (!script_buff)
             {
-                ERROR("Failed to load entity class script file. [class='%1', file='%2']", klass.GetName(), script_file);
+                ERROR("Failed to load entity class script file. [class='%1', script='%2']", klass.GetName(), script);
                 continue;
             }
             auto script_env = std::make_shared<sol::environment>(*mLuaState, sol::create, mLuaState->globals());
+            const auto& script_file = script_buff->GetName();
             const auto& script_view = sol::string_view((const char*)script_buff->GetData(),
                     script_buff->GetSize());
             const auto& result = mLuaState->script(script_view, *script_env);
@@ -1397,18 +1411,18 @@ void LuaRuntime::BeginPlay(Scene* scene)
     {
         const auto& klass = scene->GetClass();
         const auto& script = klass.GetScriptFileId();
-        const auto& script_file = base::JoinPath(mLuaPath, script + ".lua");
-        const auto& script_buff = mDataLoader->LoadGameDataFromFile(script_file);
+        const auto& script_buff = mDataLoader->LoadEngineDataId(script);
         if (!script_buff)
         {
-            ERROR("Failed to load scene class script file. [class='%1', file='%2']", klass.GetName(), script_file);
+            ERROR("Failed to load scene class script file. [class='%1', script='%2']", klass.GetName(), script);
         }
         else
         {
             scene_env = std::make_unique<sol::environment>(*mLuaState, sol::create, mLuaState->globals());
-            const auto& view = sol::string_view((const char*)script_buff->GetData(),
-                                                script_buff->GetSize());
-            const auto& result = mLuaState->script(view, *scene_env);
+            const auto& script_file = script_buff->GetName();
+            const auto& script_view = sol::string_view((const char*)script_buff->GetData(),
+                  script_buff->GetSize());
+            const auto& result = mLuaState->script(script_view, *scene_env);
             if (!result.valid())
             {
                 const sol::error err = result;
@@ -1704,6 +1718,9 @@ void LuaRuntime::OnUIOpen(uik::Window* ui)
     if (mGameEnv)
         CallLua((*mGameEnv)["OnUIOpen"], ui);
 
+    if (mScene &&  mSceneEnv)
+        CallLua((*mSceneEnv)["OnUIOpen"], mScene, ui);
+
     if (auto* env = GetTypeEnv(*ui))
     {
         CallLua((*env)["OnUIOpen"], ui);
@@ -1714,6 +1731,9 @@ void LuaRuntime::OnUIClose(uik::Window* ui, int result)
     if (mGameEnv)
         CallLua((*mGameEnv)["OnUIClose"], ui, result);
 
+    if (mScene && mSceneEnv)
+        CallLua((*mSceneEnv)["OnUIClose"], mScene, ui, result);
+
     if (auto* env = GetTypeEnv(*ui))
     {
         CallLua((*env)["OnUIClose"], ui, result);
@@ -1723,6 +1743,9 @@ void LuaRuntime::OnUIAction(uik::Window* ui, const uik::Window::WidgetAction& ac
 {
     if (mGameEnv)
         CallLua((*mGameEnv)["OnUIAction"], ui, action);
+
+    if (mScene && mSceneEnv)
+        CallLua((*mSceneEnv)["OnUIAction"], mScene, ui, action);
 
     if (auto* env = GetTypeEnv(*ui))
     {
@@ -1851,14 +1874,14 @@ sol::environment* LuaRuntime::GetTypeEnv(const EntityClass& klass)
     if (it != mEntityEnvs.end())
         return it->second.get();
 
-    const auto& script_id   = klass.GetScriptFileId();
-    const auto& script_file = base::JoinPath(mLuaPath, script_id + ".lua");
-    const auto& script_buff = mDataLoader->LoadGameDataFromFile(script_file);
+    const auto& script = klass.GetScriptFileId();
+    const auto& script_buff = mDataLoader->LoadEngineDataId(script);
     if (!script_buff)
     {
-        ERROR("Failed to load entity class script file. [class='%1', file='%2']", klass.GetName(), script_file);
+        ERROR("Failed to load entity class script file. [class='%1', script='%2']", klass.GetName(), script);
         return nullptr;
     }
+    const auto& script_file = script_buff->GetName();
     const auto& script_view = sol::string_view((const char*)script_buff->GetData(),
         script_buff->GetSize());
     auto env = std::make_unique<sol::environment>(*mLuaState, sol::create, mLuaState->globals());
@@ -1887,14 +1910,14 @@ sol::environment* LuaRuntime::GetTypeEnv(const uik::Window& window)
     if (it != mWindowEnvs.end())
         return it->second.get();
 
-    const auto& script_id   = window.GetScriptFile();
-    const auto& script_file = base::JoinPath(mLuaPath, script_id + ".lua");
-    const auto& script_buff = mDataLoader->LoadGameDataFromFile(script_file);
+    const auto& script = window.GetScriptFile();
+    const auto& script_buff = mDataLoader->LoadEngineDataId(script);
     if (!script_buff)
     {
-        ERROR("Failed to load UiKit window script file. [class='%1', file='%2']", window.GetName(), script_file);
+        ERROR("Failed to load UiKit window script file. [class='%1', script='%2']", window.GetName(), script);
         return nullptr;
     }
+    const auto& script_file = script_buff->GetName();
     const auto& script_view = sol::string_view((const char*)script_buff->GetData(),
         script_buff->GetSize());
     auto env = std::make_unique<sol::environment>(*mLuaState, sol::create, mLuaState->globals());
@@ -2581,7 +2604,7 @@ void BindGameLib(sol::state& L)
     classlib["FindAudioGraphClassById"]   = &ClassLibrary::FindAudioGraphClassById;
 
     auto drawable = table.new_usertype<DrawableItem>("Drawable");
-    drawable["GetMaterialId"] = &DrawableItem::GetMaterialId;
+    drawable["GetPaletteMaterialId"] = &DrawableItem::GetMaterialId;
     drawable["GetDrawableId"] = &DrawableItem::GetDrawableId;
     drawable["GetLayer"]      = &DrawableItem::GetLayer;
     drawable["GetLineWidth"]  = &DrawableItem::GetLineWidth;
@@ -2700,9 +2723,10 @@ void BindGameLib(sol::state& L)
 
     auto entity_class = table.new_usertype<EntityClass>("EntityClass",
        sol::meta_function::index, &GetScriptVar<EntityClass>);
-    entity_class["GetId"]   = &EntityClass::GetId;
-    entity_class["GetName"] = &EntityClass::GetName;
+    entity_class["GetId"]       = &EntityClass::GetId;
+    entity_class["GetName"]     = &EntityClass::GetName;
     entity_class["GetLifetime"] = &EntityClass::GetLifetime;
+    entity_class["GetTag"]      = &EntityClass::GetTag;
 
     auto actuator_class = table.new_usertype<ActuatorClass>("ActuatorClass");
     actuator_class["GetName"]       = &ActuatorClass::GetName;
@@ -2832,6 +2856,7 @@ void BindGameLib(sol::state& L)
         sol::meta_function::new_index, &SetScriptVar<Entity>);
     entity["GetName"]              = &Entity::GetName;
     entity["GetId"]                = &Entity::GetId;
+    entity["GetTag"]               = &Entity::GetTag;
     entity["GetClassName"]         = &Entity::GetClassName;
     entity["GetClassId"]           = &Entity::GetClassId;
     entity["GetClass"]             = &Entity::GetClass;
@@ -2853,6 +2878,7 @@ void BindGameLib(sol::state& L)
     entity["PlayAnimationByName"]  = &Entity::PlayAnimationByName;
     entity["PlayAnimationById"]    = &Entity::PlayAnimationById;
     entity["Die"]                  = &Entity::Die;
+    entity["SetTag"]               = &Entity::SetTag;
     entity["TestFlag"]             = &TestFlag<Entity>;
     entity["SetFlag"]              = &SetFlag<Entity>;
     entity["SetVisible"]           = &Entity::SetVisible;
@@ -2954,12 +2980,16 @@ void BindGameLib(sol::state& L)
     entity_list["GetAt"]   = &EntityList::GetAt;
     entity_list["Size"]    = &EntityList::GetSize;
     entity_list["GetNext"] = &EntityList::GetNext;
+    entity_list["Join"]    = &EntityList::Join;
 
     auto scene = table.new_usertype<Scene>("Scene",
        sol::meta_function::index,     &GetScriptVar<Scene>,
        sol::meta_function::new_index, &SetScriptVar<Scene>);
     scene["ListEntitiesByClassName"]    = [](Scene& scene, const std::string& name) {
         return EntityList(scene.ListEntitiesByClassName(name));
+    };
+    scene["ListEntitiesByTag"] = [](Scene& scene, const std::string& tag) {
+        return EntityList(scene.ListEntitiesByTag(tag));
     };
     scene["GetTime"]                    = &Scene::GetTime;
     scene["GetClassName"]               = &Scene::GetClassName;

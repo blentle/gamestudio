@@ -23,6 +23,8 @@
 #  include <QColor>
 #include "warnpop.h"
 
+#include "editor/gui/gfxwidget.h"
+
 namespace gui
 {
     // Collection of global application settings.
@@ -81,6 +83,11 @@ namespace gui
         bool vsync = false;
         // Delay in milliseconds between frame swaps when non-vsync
         unsigned frame_delay = 0u;
+        // whether to show the native mouse cursor or a custom
+        // mouse cursor when the pointer is inside the gfx widget/window.
+        GfxWindow::MouseCursor mouse_cursor = GfxWindow::MouseCursor::Native;
+        // Encoded geometry of the editor when running in viewer mode.
+        QString viewer_geometry;
     };
 
 } // namespace

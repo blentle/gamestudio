@@ -54,7 +54,10 @@
 #include "editor/gui/scenewidget.h"
 #include "editor/gui/scriptwidget.h"
 #include "editor/gui/polygonwidget.h"
+#include "editor/gui/tilemapwidget.h"
 #include "editor/gui/dlgabout.h"
+#include "editor/gui/dlgimport.h"
+#include "editor/gui/dlgtileimport.h"
 #include "editor/gui/dlgsettings.h"
 #include "editor/gui/dlgimgpack.h"
 #include "editor/gui/dlgpackage.h"
@@ -119,6 +122,10 @@ gui::MainWidget* CreateWidget(app::Resource::Type type, app::Workspace* workspac
             if (resource)
                 return new gui::SceneWidget(workspace, *resource);
             return new gui::SceneWidget(workspace);
+        case app::Resource::Type::Tilemap:
+            if (resource)
+                return new gui::TilemapWidget(workspace, *resource);
+            return new gui::TilemapWidget(workspace);
         case app::Resource::Type::Script:
             if (resource)
                 return new gui::ScriptWidget(workspace, *resource);
@@ -257,7 +264,7 @@ void MainWindow::LoadSettings()
     settings.GetValue("Settings", "emsdk",                      &mSettings.emsdk);
     settings.GetValue("Settings", "clear_color",                &mSettings.clear_color);
     settings.GetValue("Settings", "grid_color",                 &mSettings.grid_color);
-    settings.GetValue("Settings", "default_grid",               (unsigned*)&mUISettings.grid);
+    settings.GetValue("Settings", "default_grid",               &mUISettings.grid);
     settings.GetValue("Settings", "default_zoom",               &mUISettings.zoom);
     settings.GetValue("Settings", "snap_to_grid",               &mUISettings.snap_to_grid);
     settings.GetValue("Settings", "show_viewport",              &mUISettings.show_viewport);
@@ -265,8 +272,11 @@ void MainWindow::LoadSettings()
     settings.GetValue("Settings", "show_grid",                  &mUISettings.show_grid);
     settings.GetValue("Settings", "vsync",                      &mSettings.vsync);
     settings.GetValue("Settings", "frame_delay",                &mSettings.frame_delay);
+    settings.GetValue("Settings", "mouse_cursor",               &mSettings.mouse_cursor);
+    settings.GetValue("Settings", "viewer_geometry",            &mSettings.viewer_geometry);
     GfxWindow::SetDefaultClearColor(ToGfx(mSettings.clear_color));
     GfxWindow::SetVSYNC(mSettings.vsync);
+    GfxWindow::SetMouseCursor(mSettings.mouse_cursor);
     gui::SetGridColor(ToGfx(mSettings.grid_color));
 
     TextEditor::Settings editor_settings;
@@ -378,7 +388,7 @@ void MainWindow::LoadState()
         QMessageBox msg(this);
         msg.setStandardButtons(QMessageBox::Ok);
         msg.setIcon(QMessageBox::Warning);
-        msg.setText(tr("There was a problem loading the previous workspace.\n\n"
+        msg.setText(tr("There was a problem loading the previous workspace.\n\n%1"
                         "See the application log for more details.").arg(workspace));
         msg.exec();
     }
@@ -436,6 +446,8 @@ bool MainWindow::LoadWorkspace(const QString& dir)
         return false;
 
     mWorkspace = std::move(workspace);
+    connect(mWorkspace.get(), &app::Workspace::ResourceUpdated, this, &MainWindow::ResourceUpdated);
+    connect(mWorkspace.get(), &app::Workspace::NewResourceAvailable, this, &MainWindow::ResourceAvailable);
 
     gfx::SetResourceLoader(mWorkspace.get());
 
@@ -461,68 +473,85 @@ bool MainWindow::LoadWorkspace(const QString& dir)
 
     // Load workspace windows and their content.
     bool success = true;
+    bool load_session = true;
+
+    const QStringList& args = QCoreApplication::arguments();
+    for (const QString& arg : args)
+    {
+        if (arg == "--no-session")
+            load_session = false;
+    }
 
     unsigned show_resource_bits = ~0u;
     QStringList session;
     mWorkspace->GetUserProperty("session_files", &session);
     mWorkspace->GetUserProperty("show_resource_bits", &show_resource_bits);
-    for (const auto& file : session)
+
+    if (load_session)
     {
-        Settings settings(file);
-        if (!settings.Load())
+        for (const auto& file: session)
         {
-            WARN("Failed to load session settings file '%1'.", file);
-            success = false;
-            continue;
-        }
-        const auto& klass = settings.GetValue("MainWindow", "class_name", QString(""));
-        const auto& id    = settings.GetValue("MainWindow", "widget_id", QString(""));
-        MainWidget* widget = nullptr;
-        if (klass == MaterialWidget::staticMetaObject.className())
-            widget = new MaterialWidget(mWorkspace.get());
-        else if (klass == ParticleEditorWidget::staticMetaObject.className())
-            widget = new ParticleEditorWidget(mWorkspace.get());
-        else if (klass == ShapeWidget::staticMetaObject.className())
-            widget = new ShapeWidget(mWorkspace.get());
-        else if (klass == AnimationTrackWidget::staticMetaObject.className())
-            widget = new AnimationTrackWidget(mWorkspace.get());
-        else if (klass == EntityWidget::staticMetaObject.className())
-            widget = new EntityWidget(mWorkspace.get());
-        else if (klass == SceneWidget::staticMetaObject.className())
-            widget = new SceneWidget(mWorkspace.get());
-        else if (klass == ScriptWidget::staticMetaObject.className())
-            widget = new ScriptWidget(mWorkspace.get());
-        else if (klass == UIWidget::staticMetaObject.className())
-            widget = new UIWidget(mWorkspace.get());
-        else if (klass == AudioWidget::staticMetaObject.className())
-            widget = new AudioWidget(mWorkspace.get());
-        else BUG("Unhandled widget type.");
+            Settings settings(file);
+            if (!settings.Load())
+            {
+                WARN("Failed to load session file. [file='%1']", file);
+                success = false;
+                continue;
+            }
+            const auto& klass = settings.GetValue("MainWindow", "class_name", QString(""));
+            const auto& id = settings.GetValue("MainWindow", "widget_id", QString(""));
+            const auto& title = settings.GetValue("MainWindow", "widget_title", QString(""));
+            MainWidget* widget = nullptr;
+            if (klass == MaterialWidget::staticMetaObject.className())
+                widget = new MaterialWidget(mWorkspace.get());
+            else if (klass == ParticleEditorWidget::staticMetaObject.className())
+                widget = new ParticleEditorWidget(mWorkspace.get());
+            else if (klass == ShapeWidget::staticMetaObject.className())
+                widget = new ShapeWidget(mWorkspace.get());
+            else if (klass == AnimationTrackWidget::staticMetaObject.className())
+                widget = new AnimationTrackWidget(mWorkspace.get());
+            else if (klass == EntityWidget::staticMetaObject.className())
+                widget = new EntityWidget(mWorkspace.get());
+            else if (klass == SceneWidget::staticMetaObject.className())
+                widget = new SceneWidget(mWorkspace.get());
+            else if (klass == TilemapWidget::staticMetaObject.className())
+                widget = new TilemapWidget(mWorkspace.get());
+            else if (klass == ScriptWidget::staticMetaObject.className())
+                widget = new ScriptWidget(mWorkspace.get());
+            else if (klass == UIWidget::staticMetaObject.className())
+                widget = new UIWidget(mWorkspace.get());
+            else if (klass == AudioWidget::staticMetaObject.className())
+                widget = new AudioWidget(mWorkspace.get());
+            else BUG("Unhandled widget type.");
 
-        if (!widget->LoadState(settings))
-        {
-            WARN("Widget '%1 failed to load state.", widget->windowTitle());
-            success = false;
-        }
-        const bool has_own_window = settings.GetValue("MainWindow", "has_own_window", false);
-        if (has_own_window)
-        {
-            ChildWindow* window = ShowWidget(widget , true);
-            const auto xpos  = settings.GetValue("MainWindow", "window_xpos", window->x());
-            const auto ypos  = settings.GetValue("MainWindow", "window_ypos", window->y());
-            const auto width = settings.GetValue("MainWindow", "window_width", window->width());
-            const auto height = settings.GetValue("MainWindow", "window_height", window->height());
-            if (xpos < size.width() && ypos < size.height())
-                window->move(xpos, ypos);
+            widget->setWindowTitle(title);
 
-            window->resize(width, height);
+            if (!widget->LoadState(settings))
+            {
+                WARN("Failed to load main widget state. [name='%1']", title);
+                success = false;
+            }
+            const bool has_own_window = settings.GetValue("MainWindow", "has_own_window", false);
+            if (has_own_window)
+            {
+                ChildWindow* window = ShowWidget(widget, true);
+                const auto xpos = settings.GetValue("MainWindow", "window_xpos", window->x());
+                const auto ypos = settings.GetValue("MainWindow", "window_ypos", window->y());
+                const auto width = settings.GetValue("MainWindow", "window_width", window->width());
+                const auto height = settings.GetValue("MainWindow", "window_height", window->height());
+                if (xpos < size.width() && ypos < size.height())
+                    window->move(xpos, ypos);
+
+                window->resize(width, height);
+                window->setWindowTitle(title);
+            } else
+            {
+                ShowWidget(widget, false);
+            }
+            // remove the file, no longer needed.
+            QFile::remove(file);
+            DEBUG("Loaded main widget. [name='%1']", title);
         }
-        else
-        {
-            ShowWidget(widget, false);
-        }
-        // remove the file, no longer needed.
-        QFile::remove(file);
-        DEBUG("Loaded widget '%1'", widget->windowTitle());
     }
 
     setWindowTitle(QString("%1 - %2").arg(APP_TITLE).arg(mWorkspace->GetName()));
@@ -566,8 +595,7 @@ bool MainWindow::SaveWorkspace()
     // we generate a temporary json file in which we save the UI state
     // of that widget. When the application is relaunched we use the
     // data in the JSON file to recover the widget and it's contents.
-    const auto tabs = mUI.mainTab->count();
-    for (int i=0; i<tabs; ++i)
+    for (int i=0; i<GetCount(mUI.mainTab); ++i)
     {
         const auto& temp = app::RandomString();
         const auto& path = app::GetAppHomeFilePath("temp");
@@ -582,22 +610,23 @@ bool MainWindow::SaveWorkspace()
         const auto* widget = static_cast<MainWidget*>(mUI.mainTab->widget(i));
 
         Settings settings(file);
-        settings.SetValue("MainWindow", "class_name", widget->metaObject()->className());
-        settings.SetValue("MainWindow", "widget_id", widget->GetId());
+        settings.SetValue("MainWindow", "class_name",   widget->metaObject()->className());
+        settings.SetValue("MainWindow", "widget_id",    widget->GetId());
+        settings.SetValue("MainWindow", "widget_title", widget->windowTitle());
         if (!widget->SaveState(settings))
         {
-            ERROR("Failed to save widget '%1' settings.", widget->windowTitle());
+            ERROR("Failed to save main widget state. [name='%1']", widget->windowTitle());
             success = false;
             continue;
         }
         if (!settings.Save())
         {
-            ERROR("Failed to save widget '%1' settings.",  widget->windowTitle());
+            ERROR("Failed to save main widget settings. [name='%1']",  widget->windowTitle());
             success = false;
             continue;
         }
         session_file_list << file;
-        DEBUG("Saved widget '%1'", widget->windowTitle());
+        DEBUG("Saved main widget. [name='%1']", widget->windowTitle());
     }
 
     // for each widget that is contained inside a window (instead of being in the main tab)
@@ -613,7 +642,7 @@ bool MainWindow::SaveWorkspace()
         QDir dir;
         if (!dir.mkpath(path))
         {
-            ERROR("Failed to create folder: '%1'", path);
+            ERROR("Failed to create folder. [path='%1']", path);
             success = false;
             continue;
         }
@@ -621,6 +650,7 @@ bool MainWindow::SaveWorkspace()
 
         Settings settings(file);
         settings.SetValue("MainWindow", "class_name", widget->metaObject()->className());
+        settings.SetValue("MainWindow", "widget_title", widget->windowTitle());
         settings.SetValue("MainWindow", "has_own_window", true);
         settings.SetValue("MainWindow", "window_xpos", child->x());
         settings.SetValue("MainWindow", "window_ypos", child->y());
@@ -628,17 +658,17 @@ bool MainWindow::SaveWorkspace()
         settings.SetValue("MainWindow", "window_height", child->height());
         if (!widget->SaveState(settings))
         {
-            ERROR("Failed to save widget '%1' settings.", widget->windowTitle());
+            ERROR("Failed to save main widget state. [name='%1']", widget->windowTitle());
             success = false;
             continue;
         }
         if (!settings.Save())
         {
-            ERROR("Failed to save widget '%1' settings.", widget->windowTitle());
+            ERROR("Failed to save main widget settings. [name='%1']", widget->windowTitle());
             success = false;
         }
         session_file_list << file;
-        DEBUG("Saved widget '%1'", widget->windowTitle());
+        DEBUG("Saved main widget. [name='%1']", widget->windowTitle());
     }
     mWorkspace->SetUserProperty("show_resource_bits", mWorkspaceProxy.GetShowBits());
     mWorkspace->SetUserProperty("session_files", session_file_list);
@@ -710,11 +740,21 @@ void MainWindow::CloseWorkspace()
     {
         mGameProcess.Kill();
     }
+    if  (mViewerProcess.IsRunning())
+    {
+        mViewerProcess.Kill();
+    }
 
     if (mIPCHost)
     {
         mIPCHost->Close();
         mIPCHost.reset();
+    }
+
+    if (mIPCHost2)
+    {
+        mIPCHost2->Close();
+        mIPCHost2.reset();
     }
 
     if (mPlayWindow)
@@ -1291,6 +1331,12 @@ void MainWindow::on_actionNewSceneScript_triggered()
     stream << QString("function OnEntityTimer(%1, entity, timer, jitter)\nend\n\n").arg(var);
     stream << "-- Called on posted entity events.\n";
     stream << QString("function OnEntityEvent(%1, entity, event)\nend\n\n").arg(var);
+    stream << "-- Called on UI open event.\n";
+    stream << QString("function OnUIOpen(%1, ui)\nend\n\n").arg(var);
+    stream << "-- Called on UI close event.\n";
+    stream << QString("function OnUIClose(%1, ui, result)\nend\n\n").arg(var);
+    stream << "--Called on UI action event.\n";
+    stream << QString("function OnUIAction(%1, ui, action)\nend\n\n").arg(var);
 
     io.flush();
     io.close();
@@ -1377,6 +1423,11 @@ void MainWindow::on_actionNewUIScript_triggered()
     emit OpenNewWidget(widget);
 }
 
+void MainWindow::on_actionNewTilemap_triggered()
+{
+    OpenNewWidget(new TilemapWidget(mWorkspace.get()));
+}
+
 void MainWindow::on_actionNewUI_triggered()
 {
     OpenNewWidget(new UIWidget(mWorkspace.get()));
@@ -1394,6 +1445,15 @@ void MainWindow::on_actionImportFiles_triggered()
     ImportFiles(files);
 }
 
+void MainWindow::on_actionImportTiles_triggered()
+{
+    if (!mWorkspace)
+        return;
+
+    DlgTileImport dlg(this, mWorkspace.get());
+    dlg.exec();
+}
+
 void MainWindow::on_actionExportJSON_triggered()
 {
     if (!mWorkspace)
@@ -1402,27 +1462,28 @@ void MainWindow::on_actionExportJSON_triggered()
     if (indices.isEmpty())
         return;
     const auto& filename = QFileDialog::getSaveFileName(this,
-        tr("Export Resources as Json"),
-        tr("content.json"),
+        tr("Export Resource Json"),
+        tr("resource.json"),
         tr("JSON (*.json)"));
     if (filename.isEmpty())
         return;
 
-    if (!mWorkspace->ExportResources(indices, filename))
+    if (!mWorkspace->ExportResourceJson(indices, filename))
     {
         QMessageBox msg(this);
         msg.setIcon(QMessageBox::Critical);
         msg.setStandardButtons(QMessageBox::Ok);
-        msg.setText(tr("Failed to export the JSON into file.\n"
+        msg.setText(tr("Failed to export the JSON to a file.\n"
                        "Please see the log for details."));
         msg.exec();
         return;
     }
-    NOTE("Exported %1 resource(s) into '%2'", indices.size(), filename);
+    NOTE("Exported %1 resource(s) to '%2'", indices.size(), filename);
+    INFO("Exported %1 resource(s) to '%2'", indices.size(), filename);
     QMessageBox msg(this);
     msg.setIcon(QMessageBox::Information);
     msg.setStandardButtons(QMessageBox::Ok);
-    msg.setText(tr("Exported %1 resource(s) into '%2'").arg(indices.size()).arg(filename));
+    msg.setText(tr("Exported %1 resource(s) to '%2'").arg(indices.size()).arg(filename));
     msg.exec();
 }
 
@@ -1437,7 +1498,7 @@ void MainWindow::on_actionImportJSON_triggered()
         return;
 
     std::vector<std::unique_ptr<app::Resource>> resources;
-    if (!app::Workspace::ImportResources(filename, resources))
+    if (!app::Workspace::ImportResourcesFromJson(filename, resources))
     {
         QMessageBox msg(this);
         msg.setIcon(QMessageBox::Critical);
@@ -1474,6 +1535,61 @@ void MainWindow::on_actionImportJSON_triggered()
         msg.setText(tr("Imported %1 resources into workspace.").arg(import_count));
         msg.exec();
     }
+}
+
+void MainWindow::on_actionImportZIP_triggered()
+{
+    if (!mWorkspace)
+        return;
+
+    DlgImport dlg(this, mWorkspace.get());
+    dlg.exec();
+}
+
+void MainWindow::on_actionExportZIP_triggered()
+{
+    if (!mWorkspace)
+        return;
+
+    const auto& selection = GetSelection(mUI.workspace);
+    if (selection.isEmpty())
+        return;
+    const auto& filename = QFileDialog::getSaveFileName(this,
+        tr("Export resource(s) to Zip"),
+        tr("export.zip"),
+        tr("ZIP (*.zip)"));
+    if (filename.isEmpty())
+        return;
+
+    std::vector<const app::Resource*> resources;
+
+    for (int i=0; i<selection.size(); ++i)
+        resources.push_back(&mWorkspace->GetUserDefinedResource(selection[i].row()));
+
+    const auto& list = mWorkspace->ListDependencies(selection);
+    for (const auto& item : list)
+        resources.push_back(item.resource);
+
+    app::Workspace::ExportOptions options;
+    options.zip_file = filename;
+
+    if (!mWorkspace->ExportResourceArchive(resources, options))
+    {
+        QMessageBox msg(this);
+        msg.setIcon(QMessageBox::Critical);
+        msg.setStandardButtons(QMessageBox::Ok);
+        msg.setText(tr("Failed to export the resource(s) to a zip file.\n"
+                       "Please see the application log for more details."));
+        msg.exec();
+        return;
+    }
+    NOTE("Exported %1 resource(s) to '%2'.", resources.size(), filename);
+    INFO("Exported %1 resource(s) to '%2'.", resources.size(), filename);
+    QMessageBox msg(this);
+    msg.setIcon(QMessageBox::Information);
+    msg.setStandardButtons(QMessageBox::Ok);
+    msg.setText(tr("Exported %1 resources to '%2'.").arg(resources.size()).arg(filename));
+    msg.exec();
 }
 
 void MainWindow::on_actionEditResource_triggered()
@@ -1735,6 +1851,7 @@ void MainWindow::on_actionSettings_triggered()
     TextEditor::SetDefaultSettings(editor_settings);
     GfxWindow::SetDefaultClearColor(ToGfx(mSettings.clear_color));
     GfxWindow::SetVSYNC(mSettings.vsync);
+    GfxWindow::SetMouseCursor(mSettings.mouse_cursor);
     gui::SetGridColor(ToGfx(mSettings.grid_color));
 
     if (current_style == mSettings.style_name)
@@ -1755,6 +1872,62 @@ void MainWindow::on_actionImagePacker_triggered()
     DlgImgPack dlg(this);
     dlg.exec();
 }
+
+void MainWindow::on_actionLaunchViewer_triggered()
+{
+    if (!mWorkspace)
+        return;
+
+    app::IPCHost::CleanupSocket("gamestudio-local-socket-2");
+    auto ipc = std::make_unique<app::IPCHost>();
+    if (!ipc->Open("gamestudio-local-socket-2"))
+        return;
+
+    DEBUG("Local socket is open!");
+
+    QStringList viewer_args;
+    viewer_args << "--viewer";
+    viewer_args << "--socket-name";
+    viewer_args << "gamestudio-local-socket-2";
+    viewer_args << "--app-style";
+    viewer_args << mSettings.style_name;
+
+    QString executable = "GSEditor";
+#if defined(WINDOWS_OS)
+    executable.append(".exe");
+#endif
+    const auto& exec_file = app::JoinPath(QCoreApplication::applicationDirPath(), executable);
+    const auto& log_file  = app::JoinPath(QCoreApplication::applicationDirPath(), "viewer.log");
+    const auto& viewer_cwd  = QDir::currentPath();
+    mViewerProcess.EnableTimeout(false);
+    mViewerProcess.onFinished = [this]() {
+        DEBUG("Viewer process finished.");
+        if (mViewerProcess.GetError() != app::Process::Error::None)
+            ERROR("Viewer process error. [error='%1']", mViewerProcess.GetError());
+
+        mIPCHost2->Close();
+        mIPCHost2.reset();
+        SetEnabled(mUI.actionLaunchViewer, true);
+    };
+    mViewerProcess.Start(exec_file, viewer_args, log_file, viewer_cwd);
+    mIPCHost2 = std::move(ipc);
+
+    QObject::connect(mIPCHost2.get(), &app::IPCHost::ClientConnected,
+         [this]() {
+             QJsonObject json;
+             app::JsonWrite(json, "message",      QString("settings"));
+             app::JsonWrite(json, "clear_color",  mSettings.clear_color);
+             app::JsonWrite(json, "grid_color",   mSettings.grid_color);
+             app::JsonWrite(json, "mouse_cursor", mSettings.mouse_cursor);
+             app::JsonWrite(json, "vsync",        mSettings.vsync);
+             app::JsonWrite(json, "geometry",     mSettings.viewer_geometry);
+             mIPCHost2->SendJsonMessage(json);
+        });
+    QObject::connect(mIPCHost2.get(), &app::IPCHost::JsonMessageReceived, this, &MainWindow::ViewerJsonMessageReceived);
+
+    SetEnabled(mUI.actionLaunchViewer, false);
+}
+
 void MainWindow::on_actionClearLog_triggered()
 {
     app::EventLog::get().clear();
@@ -1816,22 +1989,33 @@ void MainWindow::on_workspace_customContextMenuRequested(QPoint)
     mUI.actionEditResourceNewTab->setEnabled(!indices.isEmpty());
     mUI.actionExportJSON->setEnabled(!indices.isEmpty());
     mUI.actionImportJSON->setEnabled(mWorkspace != nullptr);
+    mUI.actionExportZIP->setEnabled(!indices.isEmpty());
+    mUI.actionImportZIP->setEnabled(mWorkspace != nullptr);
     mUI.actionRenameResource->setEnabled(!indices.empty());
 
-    // disable edit actions if a non-native resources have been
-    // selected. these need to be opened through an external editor.
     for (int i=0; i<indices.size(); ++i)
     {
         const auto& resource = mWorkspace->GetResource(indices[i].row());
-        if (resource.IsAudioGraph() || resource.IsDataFile()) {
-            mUI.actionEditResource->setEnabled(false);
-            mUI.actionEditResourceNewTab->setEnabled(false);
-            mUI.actionEditResourceNewWindow->setEnabled(false);
+        if (resource.IsDataFile())
+        {
+            // disable edit actions if a non-native resources have been
+            // selected. these need to be opened through an external editor.
+            SetEnabled(mUI.actionEditResource, false);
+            SetEnabled(mUI.actionEditResourceNewTab, false);
+            SetEnabled(mUI.actionEditResourceNewWindow, false);
+            // disable duplicate, don't know how to dupe external data files.
+            SetEnabled(mUI.actionDuplicateResource, false);
+        }
+        else if (resource.IsScript())
+        {
+            // this doesn't currently do what is expected, since the script file
+            // is *not* copied.
+            SetEnabled(mUI.actionDuplicateResource, false);
         }
     }
 
     QMenu show;
-    show.setTitle("Show ...");
+    show.setTitle("Show");
     for (const auto val : magic_enum::enum_values<app::Resource::Type>())
     {
         // skip drawable it's a superclass type and not directly relevant
@@ -1849,7 +2033,7 @@ void MainWindow::on_workspace_customContextMenuRequested(QPoint)
     }
 
     QMenu script;
-    script.setTitle("New Script ...");
+    script.setTitle("New Script");
     script.setIcon(QIcon("icons:add.png"));
     script.addAction(mUI.actionNewBlankScript);
     script.addAction(mUI.actionNewEntityScript);
@@ -1863,10 +2047,14 @@ void MainWindow::on_workspace_customContextMenuRequested(QPoint)
     menu.addAction(mUI.actionNewEntity);
     menu.addAction(mUI.actionNewScene);
     menu.addAction(mUI.actionNewUI);
+    menu.addAction(mUI.actionNewTilemap);
     menu.addAction(mUI.actionNewAudioGraph);
     menu.addMenu(&script);
     menu.addSeparator();
     menu.addAction(mUI.actionImportFiles);
+    menu.addAction(mUI.actionImportTiles);
+    menu.addAction(mUI.actionImportJSON);
+    menu.addAction(mUI.actionImportZIP);
     menu.addSeparator();
     menu.addAction(mUI.actionEditResource);
     menu.addAction(mUI.actionEditResourceNewWindow);
@@ -1875,8 +2063,9 @@ void MainWindow::on_workspace_customContextMenuRequested(QPoint)
     menu.addAction(mUI.actionRenameResource);
     menu.addAction(mUI.actionDuplicateResource);
     menu.addAction(mUI.actionDeleteResource);
+    menu.addSeparator();
     menu.addAction(mUI.actionExportJSON);
-    menu.addAction(mUI.actionImportJSON);
+    menu.addAction(mUI.actionExportZIP);
     menu.addSeparator();
     menu.addMenu(&show);
     menu.exec(QCursor::pos());
@@ -2025,7 +2214,7 @@ void MainWindow::on_actionProjectPlay_triggered()
             return;
 
         ASSERT(!mIPCHost);
-        app::IPCHost::Cleanup("gamestudio-local-socket");
+        app::IPCHost::CleanupSocket("gamestudio-local-socket");
         auto ipc = std::make_unique<app::IPCHost>();
         if (!ipc->Open("gamestudio-local-socket"))
             return;
@@ -2165,6 +2354,11 @@ void MainWindow::on_btnUI_clicked()
 void MainWindow::on_btnAudio_clicked()
 {
     OpenNewWidget(MakeWidget(app::Resource::Type::AudioGraph));
+}
+
+void MainWindow::on_btnTilemap_clicked()
+{
+    OpenNewWidget(MakeWidget(app::Resource::Type::Tilemap));
 }
 
 void MainWindow::RefreshUI()
@@ -2403,12 +2597,34 @@ void MainWindow::RefreshWidget()
     UpdateStats();
 }
 
+void MainWindow::RefreshWidgetActions()
+{
+    auto* widget = dynamic_cast<MainWidget*>(sender());
+    if (widget == mCurrentWidget)
+    {
+        mUI.mainToolBar->clear();
+        mUI.menuTemp->clear();
+        widget->AddActions(*mUI.mainToolBar);
+        widget->AddActions(*mUI.menuTemp);
+    }
+    else
+    {
+        for (auto* child : mChildWindows)
+        {
+            if (child->GetWidget() == widget)
+                child->RefreshActions();
+        }
+    }
+}
+
 void MainWindow::OpenResource(const QString& id)
 {
     if (id.isEmpty())
         return;
     if (auto* resource = mWorkspace->FindResourceById(id))
     {
+        if (resource->IsPrimitive())
+            return;
         const auto open_new_window = mSettings.default_open_win_or_tab == "Window";
 
         if (!FocusWidget(id))
@@ -2487,16 +2703,87 @@ void MainWindow::CleanGarbage()
     GfxWindow::CleanGarbage();
 }
 
+void MainWindow::ResourceUpdated(const app::Resource* resource)
+{
+    // forward to one function for now
+    ResourceAvailable(resource);
+}
+void MainWindow::ResourceAvailable(const app::Resource* resource)
+{
+    for (int i=0; i< GetCount(mUI.mainTab); ++i)
+    {
+        auto* widget = static_cast<MainWidget*>(mUI.mainTab->widget(i));
+        if (widget->GetId() == resource->GetId())
+        {
+            widget->setWindowTitle(resource->GetName());
+            mUI.mainTab->setTabText(i, resource->GetName());
+            return;
+        }
+    }
+    for (auto* child : mChildWindows)
+    {
+        auto* widget = child->GetWidget();
+        if (widget->GetId() == resource->GetId())
+        {
+            widget->setWindowTitle(resource->GetName());
+            child->setWindowTitle(resource->GetName());
+            return;
+        }
+    }
+}
+
+void MainWindow::ViewerJsonMessageReceived(const QJsonObject& json)
+{
+    QString message;
+    app::JsonReadSafe(json, "message", &message);
+    DEBUG("New IPC message from viewer. [message='%1']", message);
+
+    if (message == "viewer-geometry")
+    {
+        QString geometry;
+        app::JsonReadSafe(json, "geometry", &geometry);
+        mSettings.viewer_geometry = geometry;
+    }
+    else if (message == "viewer-export")
+    {
+        // try to bring this window to the top
+        activateWindow();
+
+        QString zip_file;
+        QString folder_suggestion;
+        QString prefix_suggestion;
+        app::JsonReadSafe(json, "zip_file", &zip_file);
+        app::JsonReadSafe(json, "folder_suggestion", &folder_suggestion);
+        app::JsonReadSafe(json, "prefix_suggestion", &prefix_suggestion);
+        DlgImport dlg(this, mWorkspace.get());
+        if (!dlg.OpenArchive(zip_file, folder_suggestion, prefix_suggestion))
+            return;
+        dlg.exec();
+    }
+    else
+    {
+        WARN("Ignoring unknown JSON IPC message. [message='%1']", message);
+    }
+}
+
 bool MainWindow::event(QEvent* event)
 {
     if (event->type() == QEvent::KeyPress)
     {
-        const auto* key = static_cast<QKeyEvent*>(event);
-        if (key->key() != Qt::Key_Escape)
-            return QMainWindow::event(event);
-        else if (!mCurrentWidget)
-            return false;
-        mCurrentWidget->OnEscape();
+        auto* key = static_cast<QKeyEvent*>(event);
+        if (mCurrentWidget)
+        {
+            if (key->key() == Qt::Key_Escape)
+            {
+                if (mCurrentWidget->OnEscape())
+                    return true;
+            }
+            else
+            {
+                if (mCurrentWidget->OnKeyDown(key))
+                    return true;
+            }
+        }
     }
     else if (event->type() == IterateGameLoopEvent::GetIdentity())
     {
@@ -2588,29 +2875,31 @@ void MainWindow::BuildRecentWorkspacesMenu()
 void MainWindow::SaveSettings()
 {
     Settings settings("Ensisoft", "Gamestudio Editor");
-    settings.SetValue("Settings", "image_editor_executable", mSettings.image_editor_executable);
-    settings.SetValue("Settings", "image_editor_arguments", mSettings.image_editor_arguments);
-    settings.SetValue("Settings", "shader_editor_executable", mSettings.shader_editor_executable);
-    settings.SetValue("Settings", "shader_editor_arguments", mSettings.shader_editor_arguments);
-    settings.SetValue("Settings", "default_open_win_or_tab", mSettings.default_open_win_or_tab);
-    settings.SetValue("Settings", "script_editor_executable", mSettings.script_editor_executable);
-    settings.SetValue("Settings", "script_editor_arguments", mSettings.script_editor_arguments);
-    settings.SetValue("Settings", "audio_editor_executable", mSettings.audio_editor_executable);
-    settings.SetValue("Settings", "audio_editor_arguments", mSettings.audio_editor_arguments);
-    settings.SetValue("Settings", "style_name", mSettings.style_name);
+    settings.SetValue("Settings", "image_editor_executable",    mSettings.image_editor_executable);
+    settings.SetValue("Settings", "image_editor_arguments",     mSettings.image_editor_arguments);
+    settings.SetValue("Settings", "shader_editor_executable",   mSettings.shader_editor_executable);
+    settings.SetValue("Settings", "shader_editor_arguments",    mSettings.shader_editor_arguments);
+    settings.SetValue("Settings", "default_open_win_or_tab",    mSettings.default_open_win_or_tab);
+    settings.SetValue("Settings", "script_editor_executable",   mSettings.script_editor_executable);
+    settings.SetValue("Settings", "script_editor_arguments",    mSettings.script_editor_arguments);
+    settings.SetValue("Settings", "audio_editor_executable",    mSettings.audio_editor_executable);
+    settings.SetValue("Settings", "audio_editor_arguments",     mSettings.audio_editor_arguments);
+    settings.SetValue("Settings", "style_name",                 mSettings.style_name);
     settings.SetValue("Settings", "save_automatically_on_play", mSettings.save_automatically_on_play);
-    settings.SetValue("Settings", "python_executable", mSettings.python_executable);
-    settings.SetValue("Settings", "emsdk", mSettings.emsdk);
-    settings.SetValue("Settings", "clear_color", mSettings.clear_color);
-    settings.SetValue("Settings", "grid_color", mSettings.grid_color);
-    settings.SetValue("Settings", "default_grid", (unsigned)mUISettings.grid);
-    settings.SetValue("Settings", "default_zoom", mUISettings.zoom);
-    settings.SetValue("Settings", "snap_to_grid", mUISettings.snap_to_grid);
-    settings.SetValue("Settings", "show_viewport", mUISettings.show_viewport);
-    settings.SetValue("Settings", "show_origin", mUISettings.show_origin);
-    settings.SetValue("Settings", "show_grid", mUISettings.show_grid);
-    settings.SetValue("Settings", "vsync", mSettings.vsync);
-    settings.SetValue("Settings", "frame_delay", mSettings.frame_delay);
+    settings.SetValue("Settings", "python_executable",          mSettings.python_executable);
+    settings.SetValue("Settings", "emsdk",                      mSettings.emsdk);
+    settings.SetValue("Settings", "clear_color",                mSettings.clear_color);
+    settings.SetValue("Settings", "grid_color",                 mSettings.grid_color);
+    settings.SetValue("Settings", "default_grid",               mUISettings.grid);
+    settings.SetValue("Settings", "default_zoom",               mUISettings.zoom);
+    settings.SetValue("Settings", "snap_to_grid",               mUISettings.snap_to_grid);
+    settings.SetValue("Settings", "show_viewport",              mUISettings.show_viewport);
+    settings.SetValue("Settings", "show_origin",                mUISettings.show_origin);
+    settings.SetValue("Settings", "show_grid",                  mUISettings.show_grid);
+    settings.SetValue("Settings", "vsync",                      mSettings.vsync);
+    settings.SetValue("Settings", "frame_delay",                mSettings.frame_delay);
+    settings.SetValue("Settings", "mouse_cursor",               mSettings.mouse_cursor);
+    settings.SetValue("Settings", "viewer_geometry",            mSettings.viewer_geometry);
     TextEditor::Settings editor_settings;
     TextEditor::GetDefaultSettings(&editor_settings);
     settings.SetValue("TextEditor", "font",                   editor_settings.font_description);
@@ -2656,13 +2945,14 @@ ChildWindow* MainWindow::ShowWidget(MainWidget* widget, bool new_window)
 
     if (!widget->property("_main_window_connected_").toBool())
     {
-        connect(widget, &MainWidget::OpenExternalImage, this, &MainWindow::OpenExternalImage);
+        connect(widget, &MainWidget::OpenExternalImage,  this, &MainWindow::OpenExternalImage);
         connect(widget, &MainWidget::OpenExternalShader, this, &MainWindow::OpenExternalShader);
         connect(widget, &MainWidget::OpenExternalScript, this, &MainWindow::OpenExternalScript);
-        connect(widget, &MainWidget::OpenExternalAudio, this, &MainWindow::OpenExternalAudio);
-        connect(widget, &MainWidget::OpenNewWidget, this, &MainWindow::OpenNewWidget);
-        connect(widget, &MainWidget::RefreshRequest, this, &MainWindow::RefreshWidget);
-        connect(widget, &MainWidget::OpenResource, this, &MainWindow::OpenResource);
+        connect(widget, &MainWidget::OpenExternalAudio,  this, &MainWindow::OpenExternalAudio);
+        connect(widget, &MainWidget::OpenNewWidget,      this, &MainWindow::OpenNewWidget);
+        connect(widget, &MainWidget::RefreshRequest,     this, &MainWindow::RefreshWidget);
+        connect(widget, &MainWidget::OpenResource,       this, &MainWindow::OpenResource);
+        connect(widget, &MainWidget::RefreshActions,     this, &MainWindow::RefreshWidgetActions);
         widget->setProperty("_main_window_connected_", true);
     }
 
@@ -2692,7 +2982,7 @@ ChildWindow* MainWindow::ShowWidget(MainWidget* widget, bool new_window)
         // showing the widget *after* resize/move might produce incorrect
         // results since apparently the window's dimensions are not fully
         // know until it has been show (presumably some layout is done)
-        // however doing the show first and and then move/resize is visually
+        // however doing the show first and then move/resize is visually
         // not very pleasing.
         child->show();
 
@@ -2727,8 +3017,14 @@ ChildWindow* MainWindow::ShowWidget(MainWidget* widget, bool new_window)
 MainWidget* MainWindow::MakeWidget(app::Resource::Type type, const app::Resource* resource)
 {
     auto* widget = CreateWidget(type, mWorkspace.get(), resource);
-    if (!resource)
+    if (resource)
+    {
+        widget->setWindowTitle(resource->GetName());
+    }
+    else
+    {
         widget->Initialize(mUISettings);
+    }
     return widget;
 }
 
@@ -2759,9 +3055,11 @@ void MainWindow::ShowHelpWidget()
         mUI.mainToolBar->addAction(mUI.actionNewScene);
         mUI.mainToolBar->addAction(mUI.actionNewScript);
         mUI.mainToolBar->addAction(mUI.actionNewUI);
+        mUI.mainToolBar->addAction(mUI.actionNewTilemap);
         mUI.mainToolBar->addAction(mUI.actionNewAudioGraph);
         mUI.mainToolBar->addSeparator();
         mUI.mainToolBar->addAction(mUI.actionImportFiles);
+        mUI.mainToolBar->addAction(mUI.actionImportTiles);
     }
     else
     {
@@ -2850,9 +3148,7 @@ void MainWindow::UpdateStats()
     const auto vbo_alloc = stats.device.static_vbo_mem_alloc +
                            stats.device.streaming_vbo_mem_alloc +
                            stats.device.dynamic_vbo_mem_alloc;
-    SetValue(mUI.statVBO, QString("%1/%2 kB")
-            .arg(vbo_use / kb, 0, 'f', 1, ' ').arg(vbo_alloc / kb, 0, 'f', 1, ' '));
-
+    SetValue(mUI.statVBO, app::toString("%1/%2", app::Bytes{vbo_use}, app::Bytes{vbo_alloc}));
     SetValue(mUI.statFps, QString::number((int) stats.graphics.fps));
     SetValue(mUI.statVsync, GfxWindow::GetVSYNC() ? QString("ON") : QString("OFF"));
 }

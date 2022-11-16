@@ -19,6 +19,7 @@
 #include "warnpush.h"
 #  include <QDir>
 #  include <QByteArray>
+#  include <QBuffer>
 #  include <QtGlobal>
 #  include <QFile>
 #  include <QFileInfo>
@@ -99,6 +100,15 @@ QString JoinPath(const QString& lhs, const QString& rhs)
         return lhs;
     const auto p = lhs + "/" + rhs;
     return ToNativeSeparators(QDir::cleanPath(p));
+}
+
+QString JoinPath(std::initializer_list<QString> parts)
+{
+    QString ret;
+    for (const auto& str : parts)
+        ret = JoinPath(ret, str);
+
+    return ret;
 }
 
 QString CleanPath(const QString& path)
@@ -242,7 +252,7 @@ std::ifstream OpenBinaryIStream(const QString& file)
 
 }
 
-bool WriteAsBinary(const QString& file, const void* data, std::size_t bytes)
+bool WriteBinaryFile(const QString& file, const void* data, std::size_t bytes)
 {
     std::ofstream out = OpenBinaryOStream(file);
     if (!out.is_open())
@@ -349,6 +359,23 @@ bool ValidateQVariantMapJsonSupport(const QVariantMap& map)
             return false;
     }
     return true;
+}
+
+size_t VariantHash(const QVariant& variant)
+{
+    QByteArray byte_array;
+
+    QBuffer buffer;
+    buffer.setBuffer(&byte_array);
+    buffer.open(QIODevice::WriteOnly);
+    QDataStream stream(&buffer);
+    stream << variant;
+
+    // the variant should have supported serialized write into a data stream
+    // if not, then we'd have to create a special case for that sucker.
+    ASSERT(byte_array.size() != 0);
+
+    return qHashBits(byte_array.data(), byte_array.size());
 }
 
 } // namespace

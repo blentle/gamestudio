@@ -60,9 +60,12 @@ public:
         data.Write("string", mStringProp);
     }
     void SetName(const std::string& name)
-    {}
+    { mName = name; }
+    std::string GetName() const
+    { return mName; }
 private:
     std::string mClassId;
+    std::string mName;
     float mFloatProp1 = 0.0f;
     float mFloatProp2 = 0.0;
     std::string mStringProp;
@@ -89,8 +92,13 @@ public:
     void IntoJson(data::Writer&) const
     {
     }
+    void SetName(const std::string& name)
+    { mName = name; }
+    std::string GetName() const
+    { return mName; }
 private:
     std::string mClassId;
+    std::string mName;
 };
 
 namespace app {
@@ -153,11 +161,20 @@ int test_main(int argc, char* argv[])
     r.SetProperty("longlong", qint64(7879));
     r.SetProperty("bytes", bytes);
     r.SetProperty("color", QColor::fromRgb(100, 120, 120, 200));
+    r.SetProperty("utf8-string", std::string("bla bla"));
+    r.SetProperty("big_value", quint64(2129019692383711403));
+    QJsonObject json;
+    app::JsonWrite(json, "foo", QString("foobar"));
+    app::JsonWrite(json, "int", 123);
+    r.SetProperty("json", json);
 
     r.SetUserProperty("int", 42);
     r.SetUserProperty("bytes", bytes);
     r.SetUserProperty("color", QColor::fromRgb(50, 80, 90, 120));
+    r.SetUserProperty("utf8-string-user", std::string("joojoo"));
+    r.SetUserProperty("json-user", json);
     map.clear();
+
 
     TEST_REQUIRE(r.HasProperty("int"));
     TEST_REQUIRE(r.HasProperty("float"));
@@ -180,14 +197,24 @@ int test_main(int argc, char* argv[])
     TEST_REQUIRE(r.GetProperty("float", 0.0f) == real::float32(123.0f));
     TEST_REQUIRE(r.GetProperty("bytes", QByteArray()) == bytes);
     TEST_REQUIRE(r.GetProperty("color", QColor()) == QColor::fromRgb(100, 120, 120, 200));
+    TEST_REQUIRE(r.GetProperty("utf8-string", std::string()) == "bla bla");
+    TEST_REQUIRE(r.GetProperty("big_value", quint64(0)) == 2129019692383711403);
     map = r.GetProperty("variant_map", map);
     TEST_REQUIRE(map["value"].toInt() == 123);
     TEST_REQUIRE(map["string"].toString() == "boo");
+    QJsonObject json_out;
+    TEST_REQUIRE(r.GetProperty("json", &json_out));
+    TEST_REQUIRE(json_out["foo"].toString() == "foobar");
+    TEST_REQUIRE(json_out["int"].toInt() == 123);
 
     TEST_REQUIRE(r.GetUserProperty("int", 0) == 42);
     TEST_REQUIRE(r.GetUserProperty("bytes", QByteArray()) == bytes);
     TEST_REQUIRE(r.GetUserProperty("color", QColor()) == QColor::fromRgb(50, 80, 90, 120));
-
+    TEST_REQUIRE(r.GetUserProperty("utf8-string-user", std::string()) == "joojoo");
+    QJsonObject json_out_user;
+    TEST_REQUIRE(r.GetUserProperty("json-user", &json_out_user));
+    TEST_REQUIRE(json_out_user["foo"].toString() == "foobar");
+    TEST_REQUIRE(json_out_user["int"].toInt() == 123);
 
     QJsonObject props;
     QJsonObject user_props;
@@ -208,9 +235,11 @@ int test_main(int argc, char* argv[])
     TEST_REQUIRE(r.HasProperty("float"));
     TEST_REQUIRE(r.HasProperty("double"));
     TEST_REQUIRE(r.HasProperty("longlong"));
+    TEST_REQUIRE(r.GetProperty("utf8-string", std::string()) == "bla bla");
 
     TEST_REQUIRE(r.HasUserProperty("int"));
     TEST_REQUIRE(r.HasUserProperty("bytes"));
+    TEST_REQUIRE(r.GetUserProperty("utf8-string-user", std::string()) == "joojoo");
 
     TestResource0* ptr0 = nullptr;
     TestResource1* ptr1 = nullptr;
